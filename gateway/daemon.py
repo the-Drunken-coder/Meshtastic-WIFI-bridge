@@ -4,6 +4,7 @@ import argparse
 import signal
 import sys
 import threading
+import time
 
 from transport.meshtastic_transport import MeshtasticTransport, ReceivedMessage
 from gateway.stream_manager import GatewayStreamManager
@@ -87,7 +88,6 @@ class GatewayDaemon:
             while self._running:
                 # Main loop - could do periodic tasks here
                 # Most work is done in callbacks
-                import time
                 time.sleep(1)
         except KeyboardInterrupt:
             logger.info("Received interrupt, shutting down...")

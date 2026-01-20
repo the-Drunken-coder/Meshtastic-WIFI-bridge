@@ -215,6 +215,8 @@ class MeshtasticTransport:
             
             payload = packet.get("decoded", {}).get("payload", b"")
             if isinstance(payload, str):
+                # Meshtastic may return payload as ISO-8859-1 encoded string
+                # for binary data. Use latin-1 which maps bytes 0-255 directly.
                 payload = payload.encode("latin-1")
             
             msg = ReceivedMessage(

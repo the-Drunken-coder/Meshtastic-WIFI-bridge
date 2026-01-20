@@ -2,9 +2,8 @@
 
 import socket
 import threading
-import selectors
-from typing import Optional, Callable
 import time
+from typing import Optional
 
 from client.stream_manager import ClientStreamManager
 from reliability.stream import Stream, StreamState
@@ -172,7 +171,7 @@ class ProxyConnection:
                 if data:
                     logger.debug(f"Client -> LoRa: {len(data)} bytes")
                     self.stream.send(data)
-                elif data == b"":
+                elif not data:  # Empty bytes means connection closed
                     logger.info("Client closed connection")
                     break
             except BlockingIOError:

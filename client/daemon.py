@@ -4,6 +4,7 @@ import argparse
 import signal
 import sys
 import threading
+import time
 
 from transport.meshtastic_transport import MeshtasticTransport, ReceivedMessage
 from client.stream_manager import ClientStreamManager
@@ -109,7 +110,6 @@ class ClientDaemon:
         try:
             while self._running:
                 # Main loop - could do periodic tasks here
-                import time
                 time.sleep(1)
         except KeyboardInterrupt:
             logger.info("Received interrupt, shutting down...")
