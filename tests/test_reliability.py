@@ -9,7 +9,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from framing.frame import Frame, FrameFlags
-from reliability.window import SlidingWindow, PendingFrame
+from reliability.window import SlidingWindow
 
 
 class TestSlidingWindow(unittest.TestCase):

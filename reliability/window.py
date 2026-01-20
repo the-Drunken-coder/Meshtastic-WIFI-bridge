@@ -2,11 +2,11 @@
 
 import threading
 from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from collections import OrderedDict
 import time
 
-from framing.frame import Frame, FrameFlags
+from framing.frame import Frame
 from common.logging_setup import get_logger
 
 logger = get_logger(__name__)

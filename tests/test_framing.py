@@ -155,10 +155,8 @@ class TestCodec(unittest.TestCase):
             payload=b"test",
         )
         
-        encoded = bytearray(encode_frame(original))
-        # Valid CRC would need to be recalculated, but we corrupt payload_len
-        # Since CRC will fail first, we need a different approach
-        # Actually, let's test by creating a frame and manually shortening it
+        # Create a frame and manually shorten it to test length validation
+        # Note: We encode to bytearray but only use the shortened version
         short_data = encode_frame(original)[:-5]  # Remove CRC and some payload
         
         with self.assertRaises(FrameDecodeError):

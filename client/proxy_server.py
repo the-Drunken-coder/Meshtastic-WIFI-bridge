@@ -123,10 +123,23 @@ class ProxyConnection:
             # Parse host:port
             if ":" in target:
                 host, port_str = target.rsplit(":", 1)
-                port = int(port_str)
+                try:
+                    port = int(port_str)
+                except ValueError:
+                    logger.warning(f"Invalid port in CONNECT request: {port_str!r}")
+                    return None, None
             else:
                 host = target
                 port = 443  # Default HTTPS
+
+            # Basic validation of host and port
+            if not host:
+                logger.warning("Empty host in CONNECT request")
+                return None, None
+
+            if not (1 <= port <= 65535):
+                logger.warning(f"Port out of valid range in CONNECT request: {port}")
+                return None, None
             
             return host, port
             
@@ -171,10 +184,11 @@ class ProxyConnection:
                 if data:
                     logger.debug(f"Client -> LoRa: {len(data)} bytes")
                     self.stream.send(data)
-                elif not data:  # Empty bytes means connection closed
+                else:  # Empty bytes (recv returned b"") means connection closed
                     logger.info("Client closed connection")
                     break
             except BlockingIOError:
+                # Non-blocking socket: no data available right now, continue polling
                 pass
             except Exception as e:
                 logger.error(f"Error receiving from client: {e}")
@@ -198,8 +212,9 @@ class ProxyConnection:
         
         try:
             self.client_socket.close()
-        except Exception:
-            pass
+        except OSError as e:
+            # Ignore socket close errors during cleanup, but log for diagnostics
+            logger.debug(f"Error closing client socket {self.client_addr}: {e}")
         
         if self.stream:
             self.stream.close()
@@ -283,8 +298,8 @@ class ProxyServer:
         if self._server_socket:
             try:
                 self._server_socket.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Error while closing server socket during stop: {e}")
         
         if self._thread:
             self._thread.join(timeout=2.0)

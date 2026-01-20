@@ -167,6 +167,11 @@ class Stream:
                 logger.info(f"Stream {self.stream_id:#x}: Accepted, state=OPEN")
                 return True
             
+            # Sending SYN-ACK failed; revert to CLOSED to keep state consistent.
+            logger.warning(
+                f"Stream {self.stream_id:#x}: Failed to send SYN-ACK, reverting to CLOSED"
+            )
+            self.state = StreamState.CLOSED
             return False
     
     def send(self, data: bytes) -> int:
@@ -324,8 +329,10 @@ class Stream:
                             payload=b"",
                         )
                         self._send_frame(nack_frame)
-        
-        # Try to send more queued data
+
+        # Try to send more queued data. Note: This is called outside the _lock
+        # intentionally - _process_send_queue() has its own locking via _send_lock,
+        # and holding _lock here could cause deadlocks. The window state is thread-safe.
         self._process_send_queue()
     
     def recv(self, max_bytes: int = 4096, timeout: Optional[float] = None) -> bytes:

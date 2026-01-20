@@ -133,11 +133,12 @@ class TestLossyChannelSimulation(unittest.TestCase):
         # All frames should arrive
         self.assertEqual(len(received), 20)
         
-        # Check if any are out of order
-        seqs = [f.seq for f in received]
-        is_ordered = all(seqs[i] <= seqs[i+1] for i in range(len(seqs)-1))
+        # Verify we can check ordering (even if not used in assertion)
         # With reordering, some might be out of order
         # (though our simple implementation may not always reorder)
+        seqs = [f.seq for f in received]
+        # Just verify the sequence list is valid length
+        self.assertEqual(len(seqs), 20)
 
 
 class TestReliabilityWithLoss(unittest.TestCase):

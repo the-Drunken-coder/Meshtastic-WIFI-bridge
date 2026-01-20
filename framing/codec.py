@@ -6,7 +6,6 @@ to and from bytes for transmission over LoRa.
 
 import struct
 import zlib
-from typing import Optional
 
 from framing.frame import Frame, FrameFlags, FRAME_HEADER_SIZE, FRAME_CRC_SIZE
 

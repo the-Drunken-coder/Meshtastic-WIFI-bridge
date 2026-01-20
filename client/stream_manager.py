@@ -3,7 +3,6 @@
 import threading
 import random
 from typing import Dict, Optional, Callable
-import time
 
 from framing.frame import Frame, FrameFlags
 from framing.codec import decode_frame, encode_frame, FrameDecodeError

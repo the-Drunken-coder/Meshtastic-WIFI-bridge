@@ -3,7 +3,6 @@
 import socket
 import threading
 from typing import Dict, Optional, Callable
-import time
 
 from framing.frame import Frame, FrameFlags
 from framing.codec import decode_frame, encode_frame, FrameDecodeError
@@ -61,6 +60,14 @@ class OutboundConnection:
                 f"Stream {self.stream.stream_id:#x}: Failed to connect to "
                 f"{self.host}:{self.port}: {e}"
             )
+            # Clean up socket on connection failure to prevent resource leak
+            if self.socket:
+                try:
+                    self.socket.close()
+                except Exception:
+                    pass
+                finally:
+                    self.socket = None
             return False
     
     def start_forwarding(self) -> None:
@@ -132,8 +139,11 @@ class OutboundConnection:
         if self.socket:
             try:
                 self.socket.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(
+                    f"Stream {self.stream.stream_id:#x}: "
+                    f"Error while closing socket: {e}",
+                )
             self.socket = None
         
         logger.debug(
@@ -265,14 +275,43 @@ class GatewayStreamManager:
             self._streams[stream_id] = stream
             self._connections[stream_id] = connection
             
-            # Accept the stream (sends SYN-ACK)
-            stream.window.receive_frame(syn_frame)  # Process received SYN
-            stream.accept()
+            try:
+                # Accept the stream (sends SYN-ACK)
+                stream.window.receive_frame(syn_frame)  # Process received SYN
+                accept_result = stream.accept()
+                if not accept_result:
+                    # Treat a False return as a failure to accept the stream
+                    raise RuntimeError(
+                        f"Stream {stream_id:#x}: accept() returned False"
+                    )
+                
+                # Start forwarding
+                connection.start_forwarding()
             
-            # Start forwarding
-            connection.start_forwarding()
-            
-            logger.info(f"Stream {stream_id:#x}: Established tunnel to {host}:{port}")
+                logger.info(
+                    f"Stream {stream_id:#x}: Established tunnel to {host}:{port}"
+                )
+            except Exception as exc:
+                logger.error(
+                    f"Stream {stream_id:#x}: Failed to establish tunnel to "
+                    f"{host}:{port}: {exc}"
+                )
+                
+                # Notify remote side of failure
+                rst_frame = Frame(
+                    stream_id=stream_id,
+                    seq=0,
+                    ack=0,
+                    flags=FrameFlags.RST,
+                    payload=b"Stream accept/start failed",
+                )
+                self._send_callback(from_node, encode_frame(rst_frame))
+                
+                # Reset and clean up partially initialized stream/connection
+                try:
+                    stream.reset()
+                finally:
+                    self._cleanup_stream(stream_id)
         else:
             # Connection failed - send RST
             rst_frame = Frame(

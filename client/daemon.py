@@ -3,7 +3,6 @@
 import argparse
 import signal
 import sys
-import threading
 import time
 
 from transport.meshtastic_transport import MeshtasticTransport, ReceivedMessage

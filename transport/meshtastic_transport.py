@@ -72,7 +72,6 @@ class MeshtasticTransport:
         
         try:
             self._interface = SerialInterface(self.serial_port)
-            self._running = True
             
             # Get local node ID
             if self._interface.myInfo:
@@ -83,7 +82,13 @@ class MeshtasticTransport:
             from pubsub import pub
             pub.subscribe(self._on_meshtastic_receive, "meshtastic.receive.data")
             
+            # Only set _running = True after all initialization is complete
+            self._running = True
+            
         except Exception as e:
+            # Reset state on failure to ensure consistent state
+            self._running = False
+            self._interface = None
             logger.error(f"Failed to connect to Meshtastic device: {e}")
             raise
     
@@ -95,8 +100,9 @@ class MeshtasticTransport:
             try:
                 from pubsub import pub
                 pub.unsubscribe(self._on_meshtastic_receive, "meshtastic.receive.data")
-            except Exception:
-                pass
+            except Exception as e:
+                # Ignore unsubscribe errors during shutdown, but log for diagnostics
+                logger.debug(f"Failed to unsubscribe from Meshtastic pubsub topic during stop: {e}")
             
             try:
                 self._interface.close()

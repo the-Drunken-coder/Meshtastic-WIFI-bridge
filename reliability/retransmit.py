@@ -1,7 +1,6 @@
 """Retransmission timer for reliable transport."""
 
 import threading
-import time
 from typing import Callable, Optional
 
 from common.logging_setup import get_logger
