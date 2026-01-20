@@ -10,6 +10,8 @@ from gateway.stream_manager import GatewayStreamManager
 from reliability.retransmit import RetransmitTimer
 from common.config import Config
 from common.logging_setup import setup_logging, get_logger
+from common.serial_detection import find_serial_port
+from common.network_detection import find_internet_interface
 
 logger = get_logger(__name__)
 
@@ -118,14 +120,14 @@ def main() -> None:
     
     parser.add_argument(
         "--serial",
-        default="/dev/ttyUSB0",
-        help="Serial port for Meshtastic device",
+        default=None,
+        help="Serial port for Meshtastic device (auto-detected if not specified)",
     )
     
     parser.add_argument(
         "--internet-iface",
-        default="wlan0",
-        help="Network interface with Internet connectivity",
+        default=None,
+        help="Network interface with Internet connectivity (auto-detected if not specified)",
     )
     
     parser.add_argument(
@@ -159,10 +161,16 @@ def main() -> None:
     # Set up logging
     setup_logging(level=args.log_level, log_file=args.log_file)
     
+    # Auto-detect serial port if not specified
+    serial_port = find_serial_port(args.serial)
+    
+    # Auto-detect internet interface if not specified
+    internet_iface = find_internet_interface(args.internet_iface)
+    
     # Create config
     config = Config(
-        serial_port=args.serial,
-        internet_iface=args.internet_iface,
+        serial_port=serial_port,
+        internet_iface=internet_iface,
         log_level=args.log_level,
         log_file=args.log_file,
         window_size=args.window_size,

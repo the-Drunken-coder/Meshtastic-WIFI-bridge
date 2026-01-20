@@ -11,6 +11,7 @@ from client.proxy_server import ProxyServer
 from reliability.retransmit import RetransmitTimer
 from common.config import Config
 from common.logging_setup import setup_logging, get_logger
+from common.serial_detection import find_serial_port
 
 logger = get_logger(__name__)
 
@@ -154,8 +155,8 @@ def main() -> None:
     
     parser.add_argument(
         "--serial",
-        default="/dev/ttyUSB0",
-        help="Serial port for Meshtastic device",
+        default=None,
+        help="Serial port for Meshtastic device (auto-detected if not specified)",
     )
     
     parser.add_argument(
@@ -216,9 +217,12 @@ def main() -> None:
     # Set up logging
     setup_logging(level=args.log_level, log_file=args.log_file)
     
+    # Auto-detect serial port if not specified
+    serial_port = find_serial_port(args.serial)
+    
     # Create config
     config = Config(
-        serial_port=args.serial,
+        serial_port=serial_port,
         listen_host=listen_host,
         listen_port=listen_port,
         gateway_node_id=gateway_node_id,
