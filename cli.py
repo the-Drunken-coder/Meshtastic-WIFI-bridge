@@ -5,6 +5,25 @@ import signal
 import subprocess
 from typing import Optional, List
 
+MODE_CHOICES = [
+    ("short_fast", "Short Fast"),
+    ("short_slow", "Short Slow"),
+    ("medium_fast", "Medium Fast"),
+    ("medium_slow", "Medium Slow"),
+    ("long_fast", "Long Fast"),
+    ("long_slow", "Long Slow"),
+]
+
+# Map friendly keys to Meshtastic modem preset enum names
+MODE_TO_PRESET = {
+    "short_fast": "SHORT_FAST",
+    "short_slow": "SHORT_SLOW",
+    "medium_fast": "MEDIUM_FAST",
+    "medium_slow": "MEDIUM_SLOW",
+    "long_fast": "LONG_FAST",
+    "long_slow": "LONG_SLOW",
+}
+
 from common.serial_detection import detect_meshtastic_port, get_default_serial_port
 from common.network_detection import detect_internet_interface, get_default_interface
 from common.logging_setup import get_logger
@@ -266,6 +285,15 @@ def configure_gateway() -> List[str]:
     # Retransmit timeout
     retransmit_timeout = get_int_input("Retransmit timeout (ms)", default=5000, min_val=1000)
     args.extend(["--retransmit-timeout", str(retransmit_timeout)])
+
+    # Radio mode
+    print_header("Radio Modem Preset")
+    for idx, (_, label) in enumerate(MODE_CHOICES, 1):
+        print(f"  {idx}. {label}")
+    choice = get_int_input("Select radio mode", default=6, min_val=1, max_val=len(MODE_CHOICES))
+    mode_key = MODE_CHOICES[choice - 1][0]
+    preset = MODE_TO_PRESET.get(mode_key, "LONG_SLOW")
+    args.extend(["--modem-preset", preset])
     
     return args
 
@@ -317,6 +345,15 @@ def configure_client() -> List[str]:
     # Retransmit timeout
     retransmit_timeout = get_int_input("Retransmit timeout (ms)", default=5000, min_val=1000)
     args.extend(["--retransmit-timeout", str(retransmit_timeout)])
+
+    # Radio mode
+    print_header("Radio Modem Preset")
+    for idx, (_, label) in enumerate(MODE_CHOICES, 1):
+        print(f"  {idx}. {label}")
+    choice = get_int_input("Select radio mode", default=6, min_val=1, max_val=len(MODE_CHOICES))
+    mode_key = MODE_CHOICES[choice - 1][0]
+    preset = MODE_TO_PRESET.get(mode_key, "LONG_SLOW")
+    args.extend(["--modem-preset", preset])
     
     return args
 

@@ -64,7 +64,7 @@ class ClientDaemon:
             raise ValueError("Gateway node ID must be specified")
         
         # Initialize transport
-        self._transport = MeshtasticTransport(self.config.serial_port)
+        self._transport = MeshtasticTransport(self.config.serial_port, modem_preset=self.config.modem_preset)
         self._transport.start()
         
         # Initialize stream manager
@@ -196,6 +196,12 @@ def main() -> None:
         default=5000,
         help="Retransmit timeout in milliseconds",
     )
+
+    parser.add_argument(
+        "--modem-preset",
+        default=None,
+        help="Meshtastic modem preset name (e.g., SHORT_FAST, SHORT_SLOW, MEDIUM_FAST, MEDIUM_SLOW, LONG_FAST, LONG_SLOW)",
+    )
     
     args = parser.parse_args()
     
@@ -230,6 +236,7 @@ def main() -> None:
         log_file=args.log_file,
         window_size=args.window_size,
         retransmit_timeout_ms=args.retransmit_timeout,
+        modem_preset=args.modem_preset,
     )
     
     # Create and run daemon
