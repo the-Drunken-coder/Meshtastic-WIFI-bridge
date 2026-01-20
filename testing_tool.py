@@ -120,7 +120,7 @@ def select_two_radios(radios: List[RadioInfo]) -> Tuple[RadioInfo, RadioInfo]:
 def set_modem_preset(iface: SerialInterface, preset_name: str) -> None:
     """Apply a modem preset by name."""
     try:
-    from meshtastic.protobufs import config_pb2
+        from meshtastic.protobufs import config_pb2
     except ImportError:
         print("meshtastic protobufs not available; cannot set preset.")
         return
@@ -227,7 +227,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     client_iface = SerialInterface(client_info.port)
 
     # subscribe to print received text payloads
-def on_rx(packet, _iface):
+    def on_rx(packet, _iface):
         decoded = packet.get("decoded", {})
         if decoded.get("portnum") not in ("PRIVATE_APP", MeshtasticTransport.PORTNUM):
             return
