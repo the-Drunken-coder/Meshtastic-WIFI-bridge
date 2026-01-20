@@ -59,6 +59,7 @@ setup(
             "clientd=client.daemon:main",
             "gatewayd=gateway.daemon:main",
             "lora-wifi-cli=cli:main",
+            "meshtastic-test=testing_tool:main",
         ],
     },
     classifiers=[

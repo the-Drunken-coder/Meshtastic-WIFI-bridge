@@ -39,7 +39,7 @@ class MeshtasticTransport:
     # Using PRIVATE_APP (256) for our protocol
     PORTNUM = 256
     
-    def __init__(self, serial_port: str):
+    def __init__(self, serial_port: str, modem_preset: Optional[str] = None):
         """
         Initialize the Meshtastic transport.
         
@@ -53,6 +53,7 @@ class MeshtasticTransport:
         self._on_receive_callback: Optional[Callable[[ReceivedMessage], None]] = None
         self._local_node_id: Optional[int] = None
         self._lock = threading.Lock()
+        self._modem_preset = modem_preset
     
     def start(self) -> None:
         """
@@ -72,6 +73,25 @@ class MeshtasticTransport:
         
         try:
             self._interface = SerialInterface(self.serial_port)
+
+            # Apply modem preset if requested
+            if self._modem_preset:
+                try:
+                    from meshtastic.protobufs import config_pb2
+
+                    preset_value = getattr(
+                        config_pb2.Config.LoraConfig.ModemPreset, self._modem_preset, None
+                    )
+                    if preset_value is not None:
+                        self._interface.localConfig.lora.modem_preset = preset_value
+                        self._interface.writeConfig("lora")
+                        time.sleep(0.1)
+                        self._interface.waitForConfig()
+                        logger.info(f"Applied modem preset: {self._modem_preset}")
+                    else:
+                        logger.warning(f"Unknown modem preset '{self._modem_preset}', skipping apply")
+                except Exception as e:
+                    logger.warning(f"Failed to apply modem preset '{self._modem_preset}': {e}")
             
             # Get local node ID
             if self._interface.myInfo:

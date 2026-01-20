@@ -33,6 +33,9 @@ class Config:
     log_level: str = "INFO"
     log_file: Optional[str] = None
 
+    # Radio modem preset (Meshtastic preset enum name)
+    modem_preset: Optional[str] = None
+
 
 # Default configuration instance
 default_config = Config()
