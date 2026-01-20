@@ -19,10 +19,13 @@ from typing import List, Optional, Tuple
 from meshtastic.serial_interface import SerialInterface
 from pubsub import pub
 
+# Use shared port number with transport layer
+from transport.meshtastic_transport import MeshtasticTransport
+
 # Map friendly mode names to Meshtastic modem presets
 MODE_PRESETS = {
-    "short_fast": "LONG_FAST",  # Meshtastic preset names differ; map intuitively
-    "short_slow": "LONG_SLOW",
+    "short_fast": "SHORT_FAST",
+    "short_slow": "SHORT_SLOW",
     "medium_fast": "MEDIUM_FAST",
     "medium_slow": "MEDIUM_SLOW",
     "long_fast": "LONG_FAST",
@@ -52,7 +55,10 @@ def list_meshtastic_ports(timeout: float = 3.0) -> List[RadioInfo]:
 
     radios: List[RadioInfo] = []
     ports = serial.tools.list_ports.comports()
+    start_time = time.monotonic()
     for port in ports:
+        if time.monotonic() - start_time > timeout:
+            break
         port_path = port.device
         try:
             iface = SerialInterface(port_path, debugOut=None, noProto=True)
@@ -71,17 +77,42 @@ def select_two_radios(radios: List[RadioInfo]) -> Tuple[RadioInfo, RadioInfo]:
     if len(radios) == 2:
         return radios[0], radios[1]
 
-    print("Select Gateway radio:")
-    for idx, r in enumerate(radios, 1):
-        print(f"{idx}) {r.port} (node {r.node_id:#x})")
-    g_idx = int(input("Gateway choice: ").strip()) - 1
-
-    print("Select Client radio:")
-    for idx, r in enumerate(radios, 1):
-        if idx - 1 == g_idx:
+    # Prompt user to select gateway radio with validation
+    while True:
+        print("Select Gateway radio:")
+        for idx, r in enumerate(radios, 1):
+            print(f"{idx}) {r.port} (node {r.node_id:#x})")
+        choice = input("Gateway choice: ").strip()
+        try:
+            g_idx = int(choice) - 1
+        except ValueError:
+            print("Invalid input. Please enter a number corresponding to a radio.")
             continue
-        print(f"{idx}) {r.port} (node {r.node_id:#x})")
-    c_idx = int(input("Client choice: ").strip()) - 1
+        if g_idx < 0 or g_idx >= len(radios):
+            print(f"Invalid selection. Please enter a number between 1 and {len(radios)}.")
+            continue
+        break
+
+    # Prompt user to select client radio with validation
+    while True:
+        print("Select Client radio:")
+        for idx, r in enumerate(radios, 1):
+            if idx - 1 == g_idx:
+                continue
+            print(f"{idx}) {r.port} (node {r.node_id:#x})")
+        choice = input("Client choice: ").strip()
+        try:
+            c_idx = int(choice) - 1
+        except ValueError:
+            print("Invalid input. Please enter a number corresponding to a radio.")
+            continue
+        if c_idx < 0 or c_idx >= len(radios):
+            print(f"Invalid selection. Please enter a number between 1 and {len(radios)} (excluding the gateway).")
+            continue
+        if c_idx == g_idx:
+            print("Client radio must be different from the gateway radio. Please choose another.")
+            continue
+        break
 
     return radios[g_idx], radios[c_idx]
 
@@ -89,7 +120,7 @@ def select_two_radios(radios: List[RadioInfo]) -> Tuple[RadioInfo, RadioInfo]:
 def set_modem_preset(iface: SerialInterface, preset_name: str) -> None:
     """Apply a modem preset by name."""
     try:
-        from meshtastic.protobufs import config_pb2
+    from meshtastic.protobufs import config_pb2
     except ImportError:
         print("meshtastic protobufs not available; cannot set preset.")
         return
@@ -105,16 +136,25 @@ def set_modem_preset(iface: SerialInterface, preset_name: str) -> None:
 
 def send_test_message(src: SerialInterface, dest_id: int, text: str) -> None:
     payload = text.encode("utf-8")
-    src.sendData(payload, destinationId=dest_id, portNum=SerialInterface.PRIVATE_APP_PORTNUM, wantAck=False)
+    src.sendData(payload, destinationId=dest_id, portNum=MeshtasticTransport.PORTNUM, wantAck=False)
 
 
 def measure_bandwidth(src: SerialInterface, dest: SerialInterface, bytes_len: int = 2048) -> float:
-    """Send a payload and measure one-way time; return bytes/sec."""
+    """Send a payload and measure effective throughput using ACK timing; return bytes/sec."""
     data = b"x" * bytes_len
     start = time.time()
-    src.sendData(data, destinationId=dest.myInfo.my_node_num, portNum=SerialInterface.PRIVATE_APP_PORTNUM, wantAck=False)
-    # crude wait for airtime
-    time.sleep(1.0)
+    src.sendData(
+        data,
+        destinationId=dest.myInfo.my_node_num,
+        portNum=MeshtasticTransport.PORTNUM,
+        wantAck=True,
+    )
+    # Prefer waiting for an actual acknowledgment if supported.
+    if hasattr(src, "waitForAck"):
+        try:
+            src.waitForAck(timeout=10.0)
+        except Exception:
+            pass
     end = time.time()
     duration = max(end - start, 0.001)
     return bytes_len / duration
@@ -160,7 +200,7 @@ def run_bandwidth_comparison(client: SerialInterface, gateway: SerialInterface) 
         print(f"Setting mode: {label} ({preset_name})")
         set_modem_preset(client, preset_name)
         set_modem_preset(gateway, preset_name)
-        time.sleep(0.5)
+        time.sleep(3.0)
         bw = measure_bandwidth(client, gateway)
         results.append((label, bw))
         print(f"  {label}: {bw:.1f} bytes/sec")
@@ -187,9 +227,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     client_iface = SerialInterface(client_info.port)
 
     # subscribe to print received text payloads
-    def on_rx(packet, iface):
+def on_rx(packet, _iface):
         decoded = packet.get("decoded", {})
-        if decoded.get("portnum") != "PRIVATE_APP":
+        if decoded.get("portnum") not in ("PRIVATE_APP", MeshtasticTransport.PORTNUM):
             return
         payload = decoded.get("payload", b"")
         if isinstance(payload, str):

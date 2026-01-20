@@ -24,6 +24,16 @@ MODE_TO_PRESET = {
     "long_slow": "LONG_SLOW",
 }
 
+
+def prompt_radio_mode(default_index: int = 6) -> str:
+    """Prompt user for radio modem preset and return preset name."""
+    print_header("Radio Modem Preset")
+    for idx, (_, label) in enumerate(MODE_CHOICES, 1):
+        print(f"  {idx}. {label}")
+    choice = get_int_input("Select radio mode", default=default_index, min_val=1, max_val=len(MODE_CHOICES))
+    mode_key = MODE_CHOICES[choice - 1][0]
+    return MODE_TO_PRESET.get(mode_key, "LONG_SLOW")
+
 from common.serial_detection import detect_meshtastic_port, get_default_serial_port
 from common.network_detection import detect_internet_interface, get_default_interface
 from common.logging_setup import get_logger
@@ -287,12 +297,7 @@ def configure_gateway() -> List[str]:
     args.extend(["--retransmit-timeout", str(retransmit_timeout)])
 
     # Radio mode
-    print_header("Radio Modem Preset")
-    for idx, (_, label) in enumerate(MODE_CHOICES, 1):
-        print(f"  {idx}. {label}")
-    choice = get_int_input("Select radio mode", default=6, min_val=1, max_val=len(MODE_CHOICES))
-    mode_key = MODE_CHOICES[choice - 1][0]
-    preset = MODE_TO_PRESET.get(mode_key, "LONG_SLOW")
+    preset = prompt_radio_mode()
     args.extend(["--modem-preset", preset])
     
     return args
@@ -347,12 +352,7 @@ def configure_client() -> List[str]:
     args.extend(["--retransmit-timeout", str(retransmit_timeout)])
 
     # Radio mode
-    print_header("Radio Modem Preset")
-    for idx, (_, label) in enumerate(MODE_CHOICES, 1):
-        print(f"  {idx}. {label}")
-    choice = get_int_input("Select radio mode", default=6, min_val=1, max_val=len(MODE_CHOICES))
-    mode_key = MODE_CHOICES[choice - 1][0]
-    preset = MODE_TO_PRESET.get(mode_key, "LONG_SLOW")
+    preset = prompt_radio_mode()
     args.extend(["--modem-preset", preset])
     
     return args

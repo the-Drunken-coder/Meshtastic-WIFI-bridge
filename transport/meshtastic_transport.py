@@ -85,6 +85,7 @@ class MeshtasticTransport:
                     if preset_value is not None:
                         self._interface.localConfig.lora.modem_preset = preset_value
                         self._interface.writeConfig("lora")
+                        time.sleep(0.1)
                         self._interface.waitForConfig()
                         logger.info(f"Applied modem preset: {self._modem_preset}")
                     else:
