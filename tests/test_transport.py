@@ -1,16 +1,7 @@
 """Unit tests for MeshtasticTransport."""
 
-import random
-
-import pytest
-
 from dedupe import RequestDeduper
-from message import (
-    HEADER_STRUCT,
-    MAGIC,
-    VERSION,
-    MessageEnvelope,
-)
+from message import MessageEnvelope
 from transport import (
     InMemoryRadio,
     InMemoryRadioBus,

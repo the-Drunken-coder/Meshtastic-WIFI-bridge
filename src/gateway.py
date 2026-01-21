@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Callable, Dict, Optional, Set
+from typing import Any, Callable, Dict, Set
 
 from message import MessageEnvelope
 from metrics import DEFAULT_LATENCY_BUCKETS, get_metrics_registry

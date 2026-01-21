@@ -28,7 +28,6 @@ _ensure_src_imports()
 
 from client import MeshtasticClient
 from logging_utils import configure_logging
-from transport import MeshtasticTransport
 
 try:
     from .input_utils import prompt_custom_payload, prompt_for_payload, render_menu
