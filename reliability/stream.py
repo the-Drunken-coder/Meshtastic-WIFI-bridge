@@ -8,8 +8,11 @@ from dataclasses import dataclass, field
 
 from framing.frame import Frame, FrameFlags
 from framing.codec import encode_frame
+from reliability.ack_methods.base import AckNackMethod
+from reliability.ack_methods.basic import BasicAckNack
 from reliability.window import SlidingWindow
 from common.logging_setup import get_logger
+from common.chunking import clamp_chunk_size, iter_chunks
 from common.config import Config
 
 logger = get_logger(__name__)
@@ -54,6 +57,7 @@ class Stream:
         remote_node_id: int,
         config: Optional[Config] = None,
         send_callback: Optional[Callable[[bytes], bool]] = None,
+        ack_method: Optional[AckNackMethod] = None,
     ):
         """
         Initialize a stream.
@@ -68,6 +72,7 @@ class Stream:
         self.remote_node_id = remote_node_id
         self.config = config or Config()
         self._send_callback = send_callback
+        self._ack_method = ack_method or BasicAckNack()
         
         self.state = StreamState.CLOSED
         self.window = SlidingWindow(window_size=self.config.window_size)
@@ -193,12 +198,11 @@ class Stream:
                 )
                 return 0
         
-        chunk_size = self.config.chunk_payload_size
-        
+        chunk_size = clamp_chunk_size(self.config.chunk_payload_size)
+
         with self._send_lock:
             # Split data into chunks
-            for i in range(0, len(data), chunk_size):
-                chunk = data[i:i + chunk_size]
+            for chunk in iter_chunks(data, chunk_size):
                 self._send_queue.append(chunk)
         
         # Try to send queued data
@@ -218,7 +222,7 @@ class Stream:
         with self._send_lock:
             while self._send_queue and self.window.can_send():
                 chunk = self._send_queue.pop(0)
-                
+
                 with self._lock:
                     frame = Frame(
                         stream_id=self.stream_id,
@@ -227,7 +231,10 @@ class Stream:
                         flags=FrameFlags.ACK,
                         payload=chunk,
                     )
-                    
+
+                    for control in self._ack_method.on_send(self, frame):
+                        self._send_frame(control)
+
                     if self._send_frame(frame):
                         self.window.mark_sent(frame)
                         sent += 1
@@ -235,7 +242,11 @@ class Stream:
                         # Failed to send, put back in queue
                         self._send_queue.insert(0, chunk)
                         break
-        
+
+            if sent:
+                for control in self._ack_method.on_chunks_sent(self):
+                    self._send_frame(control)
+
         return sent
     
     def receive_frame(self, frame: Frame) -> None:
@@ -251,19 +262,9 @@ class Stream:
             
             logger.debug(f"Stream {self.stream_id:#x}: Received {frame}")
             
-            # Process ACK if present
-            if frame.is_ack():
-                acked = self.window.process_ack(frame.ack)
-                if acked and self.state == StreamState.SYN_SENT:
-                    self.state = StreamState.OPEN
-                    logger.info(f"Stream {self.stream_id:#x}: ACK received, state=OPEN")
-            
-            # Process NACK if present
-            if frame.is_nack():
-                to_retransmit = self.window.process_nack(frame.ack)
-                if to_retransmit:
-                    self._send_frame(to_retransmit)
-                    self.stats.retransmits += 1
+            # Let ACK/NACK method process control info
+            for control in self._ack_method.handle_control(self, frame):
+                self._send_frame(control)
             
             # Handle control frames
             if frame.is_syn():
@@ -295,40 +296,27 @@ class Stream:
             # Process payload data
             if frame.payload:
                 delivered = self.window.receive_frame(frame)
-                
+
                 if delivered:
                     with self._recv_lock:
                         self._recv_buffer += frame.payload
                         self.stats.bytes_received += len(frame.payload)
                         self._recv_event.set()
-                    
+
                     # Get any buffered frames now deliverable
                     for buffered in self.window.get_deliverable_frames():
                         with self._recv_lock:
                             self._recv_buffer += buffered.payload
                             self.stats.bytes_received += len(buffered.payload)
-                    
-                    # Send ACK
-                    ack_frame = Frame(
-                        stream_id=self.stream_id,
-                        seq=self.window.allocate_seq(),
-                        ack=self.window.next_expected_seq,
-                        flags=FrameFlags.ACK,
-                        payload=b"",
-                    )
-                    self._send_frame(ack_frame)
+
+                if delivered:
+                    for control in self._ack_method.on_complete(self):
+                        self._send_frame(control)
                 else:
-                    # Might need to NACK missing frames
                     missing = self.window.get_missing_seqs()
                     if missing:
-                        nack_frame = Frame(
-                            stream_id=self.stream_id,
-                            seq=self.window.allocate_seq(),
-                            ack=missing[0],  # NACK the first missing
-                            flags=FrameFlags.NACK,
-                            payload=b"",
-                        )
-                        self._send_frame(nack_frame)
+                        for control in self._ack_method.on_missing(self, missing):
+                            self._send_frame(control)
 
         # Try to send more queued data. Note: This is called outside the _lock
         # intentionally - _process_send_queue() has its own locking via _send_lock,
@@ -346,7 +334,7 @@ class Stream:
         Returns:
             Received data (may be empty on timeout)
         """
-        deadline = time.time() + timeout if timeout else None
+        deadline = time.time() + timeout if timeout is not None else None
         
         while True:
             with self._recv_lock:
@@ -362,7 +350,7 @@ class Stream:
                 return b""
             
             # Wait for data
-            remaining = deadline - time.time() if deadline else None
+            remaining = deadline - time.time() if deadline is not None else None
             if remaining is not None and remaining <= 0:
                 return b""
             
