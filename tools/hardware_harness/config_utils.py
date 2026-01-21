@@ -4,7 +4,16 @@ import argparse
 import json
 import logging
 import os
+import sys
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+ROOT = Path(__file__).resolve()
+while ROOT != ROOT.parent and not (ROOT / "src").exists():
+    ROOT = ROOT.parent
+SRC = ROOT / "src"
+if SRC.exists() and str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 
 from transport import MeshtasticTransport
 from modes import load_mode_profile

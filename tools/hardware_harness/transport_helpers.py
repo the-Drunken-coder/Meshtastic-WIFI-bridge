@@ -1,8 +1,17 @@
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve()
+while ROOT != ROOT.parent and not (ROOT / "src").exists():
+    ROOT = ROOT.parent
+SRC = ROOT / "src"
+if SRC.exists() and str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 
 from transport import MeshtasticTransport
 

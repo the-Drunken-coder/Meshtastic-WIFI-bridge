@@ -2,11 +2,20 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import threading
+from pathlib import Path
 from typing import Tuple
 
-from cli import build_radio
+ROOT = Path(__file__).resolve()
+while ROOT != ROOT.parent and not (ROOT / "src").exists():
+    ROOT = ROOT.parent
+SRC = ROOT / "src"
+if SRC.exists() and str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
 from gateway import MeshtasticGateway
+from radio import build_radio
 from transport import MeshtasticTransport
 
 

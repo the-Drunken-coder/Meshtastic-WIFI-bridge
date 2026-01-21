@@ -49,7 +49,7 @@ over Meshtastic links while preserving reliability and deduplication.
 Gateway example:
 
 ```bash
-python cli.py \
+python scripts/cli.py \
   --mode gateway \
   --gateway-node-id GATEWAY_NODE \
   --simulate-radio
@@ -58,7 +58,7 @@ python cli.py \
 Client example:
 
 ```bash
-python cli.py \
+python scripts/cli.py \
   --mode client \
   --gateway-node-id GATEWAY_NODE \
   --command echo \

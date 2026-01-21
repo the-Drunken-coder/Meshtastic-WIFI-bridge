@@ -19,7 +19,7 @@ ACK/NACK reliability strategies, deduplication, and optional spooling.
 Terminal 1 - start a gateway:
 
 ```bash
-python cli.py \
+python scripts/cli.py \
   --mode gateway \
   --gateway-node-id gw-1 \
   --simulate-radio \
@@ -29,7 +29,7 @@ python cli.py \
 Terminal 2 - send a request:
 
 ```bash
-python cli.py \
+python scripts/cli.py \
   --mode client \
   --gateway-node-id gw-1 \
   --simulate-radio \

@@ -30,7 +30,10 @@ class ModeProfile(TypedDict, total=False):
 
 
 def _modes_dir() -> Path:
-    return Path(__file__).resolve().parent / "modes"
+    root = Path(__file__).resolve()
+    while root != root.parent and not (root / "modes").exists():
+        root = root.parent
+    return root / "modes"
 
 
 def _load_raw_mode(path: Path) -> ModeProfile:

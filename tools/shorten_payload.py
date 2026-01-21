@@ -5,22 +5,24 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
+from pathlib import Path
 from typing import Any
 
 
-def _ensure_package_imports() -> None:
+def _ensure_src_imports() -> None:
     if __package__:
         return
-    tools_dir = os.path.dirname(os.path.abspath(__file__))
-    bridge_root = os.path.abspath(os.path.join(tools_dir, ".."))
-    if bridge_root not in sys.path:
-        sys.path.insert(0, bridge_root)
+    root = Path(__file__).resolve()
+    while root != root.parent and not (root / "src").exists():
+        root = root.parent
+    src = root / "src"
+    if src.exists() and str(src) not in sys.path:
+        sys.path.insert(0, str(src))
 
 
 def shorten_payload(data: Any) -> Any:
-    _ensure_package_imports()
+    _ensure_src_imports()
     from message import shorten_payload as _shorten
 
     return _shorten(data)

@@ -9,22 +9,25 @@ import signal
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import Any, Dict, List
 
 
-def _ensure_package_imports() -> None:
+def _ensure_src_imports() -> None:
     if __package__:
         return
-    tools_dir = os.path.dirname(os.path.abspath(__file__))
-    bridge_root = os.path.abspath(os.path.join(tools_dir, "..", ".."))
-    if bridge_root not in sys.path:
-        sys.path.insert(0, bridge_root)
+    root = Path(__file__).resolve()
+    while root != root.parent and not (root / "src").exists():
+        root = root.parent
+    src = root / "src"
+    if src.exists() and str(src) not in sys.path:
+        sys.path.insert(0, str(src))
 
 
-_ensure_package_imports()
+_ensure_src_imports()
 
-from cli import configure_logging
 from client import MeshtasticClient
+from logging_utils import configure_logging
 from transport import MeshtasticTransport
 
 try:
