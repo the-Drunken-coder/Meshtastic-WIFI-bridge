@@ -1,417 +1,532 @@
-"""Interactive CLI for LoRa WiFi Forwarder."""
+"""Command-line entrypoint for the Meshtastic bridge."""
 
-import sys
-import signal
-import subprocess
-from typing import Optional, List
+from __future__ import annotations
 
-MODE_CHOICES = [
-    ("short_fast", "Short Fast"),
-    ("short_slow", "Short Slow"),
-    ("medium_fast", "Medium Fast"),
-    ("medium_slow", "Medium Slow"),
-    ("long_fast", "Long Fast"),
-    ("long_slow", "Long Slow"),
-]
+import argparse
+import json
+import logging
+import os
+import queue
+import threading
+import time
+from http.server import ThreadingHTTPServer
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
-# Map friendly keys to Meshtastic modem preset enum names
-MODE_TO_PRESET = {
-    "short_fast": "SHORT_FAST",
-    "short_slow": "SHORT_SLOW",
-    "medium_fast": "MEDIUM_FAST",
-    "medium_slow": "MEDIUM_SLOW",
-    "long_fast": "LONG_FAST",
-    "long_slow": "LONG_SLOW",
-}
+from client import MeshtasticClient
+from config import BridgeConfig
+from gateway import MeshtasticGateway
+from metrics import get_metrics_registry, start_metrics_http_server
+from transport import InMemoryRadio, MeshtasticTransport, RadioInterface
 
+if TYPE_CHECKING:
+    from meshtastic import serial_interface
 
-def prompt_radio_mode(default_index: int = 6) -> str:
-    """Prompt user for radio modem preset and return preset name."""
-    print_header("Radio Modem Preset")
-    for idx, (_, label) in enumerate(MODE_CHOICES, 1):
-        print(f"  {idx}. {label}")
-    choice = get_int_input("Select radio mode", default=default_index, min_val=1, max_val=len(MODE_CHOICES))
-    mode_key = MODE_CHOICES[choice - 1][0]
-    return MODE_TO_PRESET.get(mode_key, "LONG_SLOW")
-
-from common.serial_detection import detect_meshtastic_port, get_default_serial_port
-from common.network_detection import detect_internet_interface, get_default_interface
-from common.logging_setup import get_logger
-
-logger = get_logger(__name__)
+LOGGER = logging.getLogger(__name__)
 
 
-def clear_screen():
-    """Clear the terminal screen."""
-    import os
-    os.system('cls' if os.name == 'nt' else 'clear')
+class SerialRadioAdapter:
+    def __init__(self, interface: "serial_interface.SerialInterface") -> None:  # type: ignore[name-defined]
+        self._interface = interface
+        self._message_queue: queue.Queue[tuple[str, bytes]] = queue.Queue()
+        self._subscribed = False
+        self._numeric_to_user_id: dict[str, str] = {}  # Cache for numeric ID -> user ID mapping
+        self._recent_messages: set[tuple[str, int]] = (
+            set()
+        )  # Deduplicate recent messages (sender, payload hash)
+        self._message_lock = threading.Lock()  # Thread-safe access to recent_messages
 
+        # Check and log radio configuration
+        self._check_radio_config()
 
-def print_header(title: str):
-    """Print a formatted header."""
-    print("\n" + "=" * 60)
-    print(f"  {title}")
-    print("=" * 60 + "\n")
-
-
-def print_menu(options: List[tuple], prompt: str = "Select an option") -> int:
-    """
-    Display a menu and get user selection.
-    
-    Args:
-        options: List of (number, description) tuples
-        prompt: Prompt text
-        
-    Returns:
-        Selected option number (1-based)
-    """
-    for num, desc in options:
-        print(f"  {num}. {desc}")
-    print()
-    
-    while True:
+        # Subscribe to receive events using pubsub
         try:
-            choice = input(f"{prompt} (1-{len(options)}): ").strip()
-            num = int(choice)
-            if 1 <= num <= len(options):
-                return num
-            print(f"Please enter a number between 1 and {len(options)}")
-        except ValueError:
-            print("Please enter a valid number")
-        except KeyboardInterrupt:
-            print("\n\nCancelled.")
-            sys.exit(0)
+            from pubsub import pub
 
+            # Subscribe to all receive events (will filter by portnum in callback)
+            pub.subscribe(self._on_receive, "meshtastic.receive")
+            self._subscribed = True
+            LOGGER.debug("Subscribed to meshtastic.receive events")
+        except ImportError:
+            LOGGER.warning("pubsub not available, using polling mode")
 
-def get_text_input(prompt: str, default: Optional[str] = None, required: bool = True) -> str:
-    """
-    Get text input from user.
-    
-    Args:
-        prompt: Prompt text
-        default: Default value (optional)
-        required: Whether input is required
-        
-    Returns:
-        User input or default
-    """
-    if default:
-        full_prompt = f"{prompt} [{default}]: "
-    else:
-        full_prompt = f"{prompt}: "
-    
-    while True:
+    def _check_radio_config(self) -> None:
+        """Check and log radio configuration settings."""
         try:
-            value = input(full_prompt).strip()
-            if value:
-                return value
-            elif default:
-                return default
-            elif not required:
-                return ""
-            else:
-                print("This field is required. Please enter a value.")
-        except KeyboardInterrupt:
-            print("\n\nCancelled.")
-            sys.exit(0)
+            # Get radio configuration
+            if hasattr(self._interface, "getNodeInfo"):
+                node_info = self._interface.getNodeInfo()
+                if node_info:
+                    LOGGER.info("[RADIO] Node info available")
 
+            # Try to get radio config/prefs
+            if hasattr(self._interface, "get"):
+                try:
+                    # Common Meshtastic config keys
+                    config_keys = ["radio", "power", "hop_limit", "lora"]
+                    for key in config_keys:
+                        try:
+                            value = self._interface.get(key)
+                            if value is not None:
+                                LOGGER.info("[RADIO] Config %s: %s", key, value)
+                        except Exception:  # noqa: S110
+                            pass
+                except Exception:  # noqa: S110
+                    pass
 
-def get_int_input(prompt: str, default: Optional[int] = None, min_val: Optional[int] = None, max_val: Optional[int] = None) -> int:
-    """Get integer input from user."""
-    if default is not None:
-        full_prompt = f"{prompt} [{default}]: "
-    else:
-        full_prompt = f"{prompt}: "
-    
-    while True:
+            # Get local node info
+            if hasattr(self._interface, "getMyNodeInfo"):
+                my_info = self._interface.getMyNodeInfo()
+                if my_info:
+                    LOGGER.info(
+                        "[RADIO] Local node: %s", my_info.get("user", {}).get("id", "unknown")
+                    )
+                    # Log radio hardware info if available
+                    if "radio" in my_info:
+                        LOGGER.info("[RADIO] Radio hardware: %s", my_info["radio"])
+        except Exception as e:
+            LOGGER.debug("[RADIO] Could not check radio config: %s", e)
+
+    def _on_receive(self, packet: dict[str, Any], interface: Any) -> None:  # type: ignore[no-untyped-def]
+        """Callback for received messages via pubsub."""
         try:
-            value = input(full_prompt).strip()
-            if not value and default is not None:
-                return default
-            num = int(value)
-            if min_val is not None and num < min_val:
-                print(f"Value must be at least {min_val}")
-                continue
-            if max_val is not None and num > max_val:
-                print(f"Value must be at most {max_val}")
-                continue
-            return num
-        except ValueError:
-            print("Please enter a valid number")
-        except KeyboardInterrupt:
-            print("\n\nCancelled.")
-            sys.exit(0)
+            # CRITICAL: Only process messages from OUR interface
+            # Both radios subscribe to pubsub, so both callbacks fire for every message
+            # We must filter to only process messages from this radio's interface
+            if interface is not self._interface:
+                return
 
+            decoded = packet.get("decoded")
+            if not decoded:
+                return
 
-def list_serial_ports() -> List[str]:
-    """List available serial ports."""
-    ports = []
-    try:
-        import serial.tools.list_ports
-        port_list = serial.tools.list_ports.comports()
-        ports = [port.device for port in port_list]
-    except ImportError:
-        pass
-    except Exception:
-        pass
-    return ports
+            # Only handle PRIVATE_APP messages (our chunks)
+            # Portnum can be string "PRIVATE_APP" or integer 80
+            portnum = decoded.get("portnum")
+            if portnum not in ("PRIVATE_APP", 80):
+                return
 
+            # Get source node ID - prefer fromId (user ID format) over from (numeric)
+            # Debug: log packet keys to see what's available
+            if LOGGER.isEnabledFor(logging.DEBUG):
+                LOGGER.debug("Packet keys: %s", list(packet.keys()))
+                LOGGER.debug(
+                    "Packet fromId: %s, from: %s, decoded keys: %s",
+                    packet.get("fromId"),
+                    packet.get("from"),
+                    list(decoded.keys()) if decoded else [],
+                )
 
-def list_network_interfaces() -> List[str]:
-    """List available network interfaces."""
-    interfaces = []
-    try:
-        if sys.platform.startswith("win"):
-            # Use PowerShell to list network adapters
-            cmd = [
-                "powershell",
-                "-Command",
-                "Get-NetAdapter | Where-Object Status -eq 'Up' | Select-Object -ExpandProperty Name"
-            ]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
-            if result.returncode == 0:
-                interfaces = [line.strip() for line in result.stdout.strip().splitlines() if line.strip()]
-        else:
-            # Linux/macOS - list interfaces from /sys/class/net or ifconfig
-            import os
-            if os.path.exists("/sys/class/net"):
-                interfaces = [d for d in os.listdir("/sys/class/net") if d != "lo"]
-    except Exception:
-        pass
-    return interfaces
+            # Get source node ID - prefer fromId (user ID format) over from (numeric)
+            source = packet.get("fromId")
+            numeric_id = packet.get("from")
 
+            if not source and numeric_id:
+                # fromId is None - node not yet in database (normal for first packet)
+                # Use _getOrCreateByNum to create placeholder entry and derive user ID
+                try:
+                    numeric_id_int = int(numeric_id)
 
-def select_serial_port() -> str:
-    """Interactive serial port selection (auto-selects if detected)."""
-    # Try to detect Meshtastic port (with timeout built into detection function)
-    print("Detecting Meshtastic device...", end="", flush=True)
-    try:
-        detected = detect_meshtastic_port()
-        print("\r" + " " * 50 + "\r", end="")  # Clear the "Detecting..." message
-        if detected:
-            print(f"Auto-detected Meshtastic device: {detected}")
-            return detected
-    except Exception as e:
-        print("\r" + " " * 50 + "\r", end="")  # Clear the "Detecting..." message
-        logger.debug(f"Port detection error: {e}")
-    
-    # No detection - show selection menu
-    
-    # No detection - show selection menu
-    print_header("Serial Port Selection")
-    print("No Meshtastic device auto-detected. Please select manually:\n")
-    
-    # List all available ports
-    ports = list_serial_ports()
-    
-    options = []
-    if ports:
-        for i, port in enumerate(ports, start=1):
-            options.append((i, port))
-    
-    default_port = get_default_serial_port()
-    options.append((len(options) + 1, f"Use default: {default_port}"))
-    options.append((len(options) + 1, "Enter custom port"))
-    
-    choice = print_menu(options, "Select serial port")
-    
-    if ports and choice <= len(ports):
-        return ports[choice - 1]
-    elif choice == len(options) - 1:
-        return default_port
-    else:
-        return get_text_input("Enter serial port", default_port)
+                    # Use _getOrCreateByNum to ensure node entry exists (creates placeholder with derived user ID)
+                    if hasattr(self._interface, "_getOrCreateByNum"):
+                        node_info = self._interface._getOrCreateByNum(numeric_id_int)
+                        if node_info:
+                            # Extract user ID from the node info
+                            if isinstance(node_info, dict):
+                                user_info = node_info.get("user")
+                                if user_info and isinstance(user_info, dict):
+                                    source = user_info.get("id")
+                            elif hasattr(node_info, "user"):
+                                user_obj = node_info.user
+                                if hasattr(user_obj, "id"):
+                                    source = user_obj.id
 
+                            if source:
+                                LOGGER.debug(
+                                    "Derived user ID %s from numeric ID %s via _getOrCreateByNum",
+                                    source,
+                                    numeric_id,
+                                )
+                                self._numeric_to_user_id[str(numeric_id)] = source
 
-def select_network_interface() -> str:
-    """Interactive network interface selection (auto-selects if detected)."""
-    # Try to detect internet interface
-    detected = detect_internet_interface()
-    if detected:
-        print(f"Auto-detected internet interface: {detected}")
-        return detected
-    
-    # No detection - show selection menu
-    print_header("Network Interface Selection")
-    print("No internet interface auto-detected. Please select manually:\n")
-    
-    # List available interfaces
-    interfaces = list_network_interfaces()
-    
-    options = []
-    if interfaces:
-        for i, iface in enumerate(interfaces, start=1):
-            options.append((i, iface))
-    
-    default_iface = get_default_interface()
-    options.append((len(options) + 1, f"Use default: {default_iface}"))
-    options.append((len(options) + 1, "Enter custom interface"))
-    
-    choice = print_menu(options, "Select network interface")
-    
-    if interfaces and choice <= len(interfaces):
-        return interfaces[choice - 1]
-    elif choice == len(options) - 1:
-        return default_iface
-    else:
-        return get_text_input("Enter network interface", default_iface)
+                    # Fallback: derive user ID directly from numeric ID (hex format)
+                    if not source:
+                        # Format numeric ID as 8-digit hex and prepend "!" (default Meshtastic format)
+                        source = f"!{numeric_id_int:08x}"
+                        LOGGER.debug(
+                            "Derived user ID %s from numeric ID %s (presumptive format)",
+                            source,
+                            numeric_id,
+                        )
+                        self._numeric_to_user_id[str(numeric_id)] = source
 
+                except Exception as e:
+                    LOGGER.debug("Could not derive user ID from numeric ID %s: %s", numeric_id, e)
+                    # Last resort: use numeric ID as-is
+                    source = numeric_id
+            elif source and numeric_id:
+                # Both available - cache the mapping
+                self._numeric_to_user_id[str(numeric_id)] = str(source)
+                LOGGER.debug("Cached mapping: %s -> %s", numeric_id, source)
+            if not source:
+                return
+            source_str = str(source)
 
-def configure_gateway() -> List[str]:
-    """Interactive gateway configuration."""
-    print_header("Gateway Configuration")
-    
-    args = []
-    
-    # Serial port
-    serial_port = select_serial_port()
-    args.extend(["--serial", serial_port])
-    
-    # Network interface
-    internet_iface = select_network_interface()
-    args.extend(["--internet-iface", internet_iface])
-    
-    # Log level
-    print_header("Advanced Options")
-    log_levels = [
-        (1, "DEBUG - Detailed debugging information"),
-        (2, "INFO - General information (recommended)"),
-        (3, "WARNING - Warnings and errors only"),
-        (4, "ERROR - Errors only"),
-    ]
-    log_choice = print_menu(log_levels, "Select log level")
-    log_level = ["DEBUG", "INFO", "WARNING", "ERROR"][log_choice - 1]
-    args.extend(["--log-level", log_level])
-    
-    # Log file (optional)
-    log_file = get_text_input("Log file path (optional, press Enter to skip)", required=False)
-    if log_file:
-        args.extend(["--log-file", log_file])
-    
-    # Window size
-    window_size = get_int_input("Sliding window size", default=4, min_val=1, max_val=32)
-    args.extend(["--window-size", str(window_size)])
-    
-    # Retransmit timeout
-    retransmit_timeout = get_int_input("Retransmit timeout (ms)", default=5000, min_val=1000)
-    args.extend(["--retransmit-timeout", str(retransmit_timeout)])
+            # Handle payload (comes as bytes for PRIVATE_APP)
+            payload_bytes = decoded.get("payload", b"")
+            if not payload_bytes:
+                return
 
-    # Radio mode
-    preset = prompt_radio_mode()
-    args.extend(["--modem-preset", preset])
-    
-    return args
+            if not isinstance(payload_bytes, bytes):
+                payload_bytes = str(payload_bytes).encode("utf-8")
 
+            # Deduplicate messages: create a hash of the payload to detect duplicates
+            # Use full payload hash to avoid deduplicating different chunks with same prefix
+            # (chunks share the same message ID but have different seq numbers)
+            # Using Python's built-in hash for non-cryptographic deduplication
+            payload_hash = hash(payload_bytes)
+            message_key = (source_str, payload_hash)
 
-def configure_client() -> List[str]:
-    """Interactive client configuration."""
-    print_header("Client Configuration")
-    
-    args = []
-    
-    # Serial port
-    serial_port = select_serial_port()
-    args.extend(["--serial", serial_port])
-    
-    # Gateway node ID
-    print_header("Gateway Node ID")
-    print("You need the gateway node ID from the gateway daemon.")
-    print("It will be displayed when the gateway starts (e.g., 0x12345678 or !12345678)\n")
-    gateway_id = get_text_input("Gateway node ID (hex with ! or 0x prefix, or decimal)", required=True)
-    args.extend(["--gateway-node-id", gateway_id])
-    
-    # Listen address
-    print_header("Proxy Settings")
-    listen_host = get_text_input("Listen host", default="0.0.0.0")
-    listen_port = get_int_input("Listen port", default=3128, min_val=1, max_val=65535)
-    args.extend(["--listen", f"{listen_host}:{listen_port}"])
-    
-    # Log level
-    print_header("Advanced Options")
-    log_levels = [
-        (1, "DEBUG - Detailed debugging information"),
-        (2, "INFO - General information (recommended)"),
-        (3, "WARNING - Warnings and errors only"),
-        (4, "ERROR - Errors only"),
-    ]
-    log_choice = print_menu(log_levels, "Select log level")
-    log_level = ["DEBUG", "INFO", "WARNING", "ERROR"][log_choice - 1]
-    args.extend(["--log-level", log_level])
-    
-    # Log file (optional)
-    log_file = get_text_input("Log file path (optional, press Enter to skip)", required=False)
-    if log_file:
-        args.extend(["--log-file", log_file])
-    
-    # Window size
-    window_size = get_int_input("Sliding window size", default=4, min_val=1, max_val=32)
-    args.extend(["--window-size", str(window_size)])
-    
-    # Retransmit timeout
-    retransmit_timeout = get_int_input("Retransmit timeout (ms)", default=5000, min_val=1000)
-    args.extend(["--retransmit-timeout", str(retransmit_timeout)])
+            with self._message_lock:
+                if message_key in self._recent_messages:
+                    LOGGER.debug("[RADIO] Duplicate message from %s (ignored)", source_str)
+                    return
+                # Keep last 1000 message keys for deduplication (cleaned periodically)
+                if len(self._recent_messages) > 1000:
+                    # Clear half of old entries (simple cleanup)
+                    self._recent_messages = set(list(self._recent_messages)[500:])
+                self._recent_messages.add(message_key)
 
-    # Radio mode
-    preset = prompt_radio_mode()
-    args.extend(["--modem-preset", preset])
-    
-    return args
+            payload_preview = payload_bytes[:32].hex()
+            LOGGER.info(
+                "[RADIO] Received PRIVATE_APP message from %s (numeric: %s): %d bytes - %s",
+                source_str,
+                packet.get("from"),
+                len(payload_bytes),
+                payload_preview,
+            )
+            self._message_queue.put((source_str, payload_bytes))
+        except Exception as e:
+            LOGGER.debug("Error processing received message: %s", e)
 
-
-def main():
-    """Main interactive CLI entry point."""
-    try:
-        clear_screen()
-        print_header("LoRa WiFi Forwarder - Interactive Setup")
-        
-        mode_options = [
-            (1, "Gateway Mode - Bridge LoRa mesh to Internet"),
-            (2, "Client Mode - Provide WiFi proxy for local devices"),
-        ]
-        
-        mode_choice = print_menu(mode_options, "Select mode")
-        
-        if mode_choice == 1:
-            # Gateway mode
-            args = configure_gateway()
-            cmd = ["gatewayd"] + args
-        else:
-            # Client mode
-            args = configure_client()
-            cmd = ["clientd"] + args
-        
-        # Show summary
-        print_header("Configuration Summary")
-        print("Command to run:")
-        print(f"  {' '.join(cmd)}\n")
-        
-        confirm = get_text_input("Start daemon now? (yes/no)", default="yes", required=False)
-        if confirm.lower() not in ["yes", "y"]:
-            print("\nConfiguration cancelled.")
-            sys.exit(0)
-        
-        # Run the daemon
-        print("\n" + "=" * 60)
-        print("Starting daemon...")
-        print("Press Ctrl+C to stop")
-        print("=" * 60 + "\n")
-        
+    def send(self, destination: str, payload: bytes) -> None:  # type: ignore[override]
+        # Use sendData with PRIVATE_APP port for private messages
         try:
-            subprocess.run(cmd, check=False)
-        except KeyboardInterrupt:
-            print("\n\nStopping daemon...")
-            sys.exit(0)
-        except FileNotFoundError:
-            print(f"\nError: Command '{cmd[0]}' not found.")
-            print("Make sure the package is installed: pip install -e .")
-            sys.exit(1)
-            
+            from meshtastic import portnums_pb2
+
+            portnum = portnums_pb2.PRIVATE_APP
+        except ImportError:
+            # Fallback: PRIVATE_APP = 80
+            portnum = 80
+
+        # Convert destination to proper format
+        # Meshtastic sendData accepts both numeric IDs and user IDs - both work equivalently
+        # We prefer user ID format for clarity, but numeric IDs are also valid
+        if destination:
+            # Remove ! prefix if present to check if it's numeric
+            dest_clean = destination.lstrip("!")
+            if dest_clean.isdigit():
+                # Convert numeric ID to user ID format for consistency
+                # This uses _getOrCreateByNum or derives from hex format
+                converted = self._convert_numeric_to_user_id(dest_clean)
+                if converted:
+                    destination = converted
+                    LOGGER.debug(
+                        "Converted numeric destination %s to user ID %s before sending",
+                        dest_clean,
+                        converted,
+                    )
+                else:
+                    # Fallback: use numeric ID as-is (Meshtastic accepts this)
+                    destination = dest_clean
+            elif not destination.startswith("!"):
+                # User ID without ! prefix - add it
+                destination = "!" + destination
+            # If it already starts with ! and is hex, use as-is
+
+        payload_bytes = payload if isinstance(payload, bytes) else str(payload).encode("utf-8")
+        send_start = time.time()
+        LOGGER.info(
+            "[RADIO] Sending %d bytes to %s via PRIVATE_APP port", len(payload_bytes), destination
+        )
+
+        # Use wantAck=True for reliable delivery with automatic retries
+        # Meshtastic will automatically retry failed messages
+        self._interface.sendData(
+            payload_bytes,
+            destinationId=destination,
+            wantAck=True,  # Reliable delivery with retries
+            portNum=portnum,
+        )
+        send_time = time.time() - send_start
+        LOGGER.info(
+            "[RADIO] Sent %d bytes to %s in %.3fs", len(payload_bytes), destination, send_time
+        )
+
+    def _convert_numeric_to_user_id(self, numeric_id: str) -> str | None:
+        """Convert a numeric node ID to user ID format.
+
+        Uses _getOrCreateByNum to ensure node entry exists, then derives user ID.
+        Falls back to presumptive hex format (!{8-digit-hex}) if lookup fails.
+        This matches Meshtastic's default behavior where user ID = hex of numeric ID.
+        """
+        # Check cache first
+        if numeric_id in self._numeric_to_user_id:
+            return self._numeric_to_user_id[numeric_id]
+
+        try:
+            numeric_id_int = int(numeric_id)
+
+            # Use _getOrCreateByNum to ensure node entry exists (creates placeholder with derived user ID)
+            if hasattr(self._interface, "_getOrCreateByNum"):
+                node_info = self._interface._getOrCreateByNum(numeric_id_int)
+                if node_info:
+                    # Extract user ID from the node info
+                    if isinstance(node_info, dict):
+                        user_info = node_info.get("user")
+                        if user_info and isinstance(user_info, dict):
+                            user_id = user_info.get("id")
+                            if user_id:
+                                self._numeric_to_user_id[numeric_id] = user_id
+                                return user_id
+                    elif hasattr(node_info, "user"):
+                        user_obj = node_info.user
+                        if hasattr(user_obj, "id"):
+                            user_id = user_obj.id
+                            if user_id:
+                                self._numeric_to_user_id[numeric_id] = user_id
+                                return user_id
+
+            # Fallback: derive user ID directly from numeric ID (hex format)
+            # This is the default Meshtastic format: !{8-digit-hex}
+            # In virtually all cases, user ID = hex representation of numeric ID
+            user_id = f"!{numeric_id_int:08x}"
+            self._numeric_to_user_id[numeric_id] = user_id
+            LOGGER.debug(
+                "Derived user ID %s from numeric ID %s (presumptive format)", user_id, numeric_id
+            )
+            return user_id
+
+        except Exception as e:
+            LOGGER.debug("Could not convert numeric ID %s to user ID: %s", numeric_id, e)
+            return None
+
+    def receive(self, timeout: float) -> tuple[str, bytes] | None:  # type: ignore[override]
+        # If pubsub is available, use the queue
+        if self._subscribed:
+            try:
+                sender, payload = self._message_queue.get(timeout=timeout)
+                LOGGER.debug(
+                    "Retrieved message from queue: sender=%s (isdigit=%s)",
+                    sender,
+                    sender.isdigit() if sender else False,
+                )
+                # Try to convert numeric ID to user ID if needed
+                if sender and sender.isdigit():
+                    LOGGER.debug("Attempting to convert numeric ID %s to user ID", sender)
+                    converted = self._convert_numeric_to_user_id(sender)
+                    if converted:
+                        LOGGER.debug(
+                            "Converted numeric ID %s to user ID %s on receive", sender, converted
+                        )
+                        return (converted, payload)
+                    else:
+                        LOGGER.debug("Could not convert numeric ID %s to user ID", sender)
+                return (sender, payload)
+            except queue.Empty:
+                return None
+
+        # Fallback: poll the interface (may not work for all versions)
+        # This is a workaround - ideally we'd use pubsub
+        time.sleep(timeout)
+        return None
+
+    def close(self) -> None:
+        """Close the underlying serial interface."""
+        try:
+            # Unsubscribe from pubsub
+            if self._subscribed:
+                try:
+                    from pubsub import pub
+
+                    pub.unsubscribe(self._on_receive, "meshtastic.receive")
+                except Exception:  # noqa: S110
+                    pass
+
+            # Close the serial interface
+            if hasattr(self._interface, "close"):
+                self._interface.close()
+                LOGGER.info("[RADIO] Closed serial interface")
+        except Exception as e:
+            LOGGER.warning("[RADIO] Error closing interface: %s", e)
+
+
+def build_radio(simulate: bool, port: str | None, node_id: str | None) -> RadioInterface:
+    if simulate:
+        return InMemoryRadio(node_id or "node-0")
+    try:
+        from meshtastic import serial_interface
+    except ImportError as exc:
+        raise RuntimeError(
+            "Meshtastic serial interface is not installed; install meshtastic-python"
+        ) from exc
+    if port is None:
+        interface = serial_interface.SerialInterface()
+    else:
+        interface = serial_interface.SerialInterface(port)
+    return SerialRadioAdapter(interface)
+
+
+def configure_logging(level: str) -> None:
+    logging.basicConfig(
+        level=getattr(logging, level.upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+
+
+def parse_args() -> BridgeConfig:
+    parser = argparse.ArgumentParser(description="Meshtastic bridge")
+    parser.add_argument("--mode", choices=["gateway", "client"], required=True)
+    parser.add_argument("--gateway-node-id", required=True)
+    parser.add_argument("--simulate-radio", action="store_true", help="Use in-memory radio")
+    parser.add_argument("--timeout", type=float, default=5.0, help="Client request timeout seconds")
+    parser.add_argument("--log-level", default="INFO")
+    parser.add_argument("--command", help="Client mode command")
+    parser.add_argument("--data", default="{}")
+    parser.add_argument(
+        "--spool-path",
+        default=os.path.expanduser("~/.meshtastic_bridge_spool.json"),
+        help="Path for persistent outgoing message spool",
+    )
+    parser.add_argument("--radio-port", help="Serial port for Meshtastic")
+    parser.add_argument("--node-id", help="Meshtastic node identifier for this machine")
+    parser.add_argument(
+        "--metrics-host",
+        default=os.getenv("MESHTASTIC_METRICS_HOST", "0.0.0.0"),
+        help="Host interface for metrics/health server",
+    )
+    parser.add_argument(
+        "--metrics-port",
+        type=int,
+        default=int(os.getenv("MESHTASTIC_METRICS_PORT", "9700")),
+        help="Port for metrics/health server",
+    )
+    parser.add_argument(
+        "--disable-metrics",
+        action="store_true",
+        help="Disable metrics and health endpoints",
+    )
+    args = parser.parse_args()
+    configure_logging(args.log_level)
+    metrics_enabled_env = os.getenv("MESHTASTIC_METRICS_ENABLED")
+    metrics_enabled = (
+        metrics_enabled_env.lower() not in {"0", "false", "no"}
+        if metrics_enabled_env is not None
+        else not args.disable_metrics
+    )
+    config = BridgeConfig(
+        mode=args.mode,
+        gateway_node_id=args.gateway_node_id,
+        simulate_radio=args.simulate_radio,
+        timeout=args.timeout,
+        spool_path=args.spool_path,
+        metrics_host=args.metrics_host,
+        metrics_port=args.metrics_port,
+        metrics_enabled=metrics_enabled,
+    )
+    config._command = args.command  # type: ignore[attr-defined]
+    config._data = args.data
+    config._radio_port = args.radio_port
+    config._node_id = args.node_id or ("gateway" if args.mode == "gateway" else "client")
+    return config
+
+
+def run_gateway(config: BridgeConfig, transport: MeshtasticTransport) -> None:
+    gateway = MeshtasticGateway(transport)
+    LOGGER.info("Starting Meshtastic gateway mode")
+    try:
+        gateway.run_forever()
     except KeyboardInterrupt:
-        print("\n\nCancelled.")
-        sys.exit(0)
-    except Exception as e:
-        print(f"\nError: {e}")
-        sys.exit(1)
+        LOGGER.info("Gateway stopping")
+        gateway.stop()
+
+
+def run_client(config: BridgeConfig, transport: MeshtasticTransport) -> None:
+    command = getattr(config, "_command", None)
+    if not command:
+        raise RuntimeError("Client mode requires --command")
+    data_str = getattr(config, "_data", "{}")
+    payload: dict[str, Any] = json.loads(data_str)
+    client = MeshtasticClient(transport, config.gateway_node_id)
+    response = client.send_request(command, payload, timeout=config.timeout)
+    print(json.dumps(response.to_dict(), indent=2))
+
+
+def start_observability_server(
+    config: BridgeConfig, transport: MeshtasticTransport
+) -> Optional[ThreadingHTTPServer]:
+    if not config.metrics_enabled:
+        LOGGER.info("Metrics and health endpoints disabled")
+        return None
+
+    registry = get_metrics_registry()
+
+    def readiness() -> bool:
+        try:
+            if transport.spool:
+                return transport.spool.depth() < 1000
+        except Exception:
+            return False
+        return True
+
+    def status() -> Dict[str, object]:
+        details: Dict[str, object] = {}
+        try:
+            details["spool_depth"] = transport.spool.depth() if transport.spool else 0
+        except Exception:
+            details["spool_depth"] = -1
+        try:
+            details["dedupe"] = transport.deduper.stats()
+        except Exception:
+            details["dedupe"] = {}
+        return details
+
+    try:
+        server = start_metrics_http_server(
+            config.metrics_host,
+            config.metrics_port,
+            registry=registry,
+            readiness_fn=readiness,
+            status_fn=status,
+        )
+        LOGGER.info(
+            "Metrics server listening on %s:%s (/metrics, /health, /ready, /status)",
+            config.metrics_host,
+            config.metrics_port,
+        )
+        return server
+    except OSError as exc:
+        LOGGER.warning("Failed to start metrics server: %s", exc)
+        return None
+
+
+def main() -> None:
+    config = parse_args()
+    radio = build_radio(
+        config.simulate_radio,
+        getattr(config, "_radio_port", None),
+        getattr(config, "_node_id", None),
+    )
+    transport = MeshtasticTransport(radio, spool_path=config.spool_path)
+    metrics_server = start_observability_server(config, transport)
+    try:
+        if config.mode == "gateway":
+            run_gateway(config, transport)
+        else:
+            run_client(config, transport)
+    finally:
+        if metrics_server:
+            metrics_server.shutdown()
+            metrics_server.server_close()
 
 
 if __name__ == "__main__":

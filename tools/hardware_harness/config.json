@@ -1,0 +1,12 @@
+{
+  "gateway_port": null,
+  "client_port": null,
+  "gateway_node_id": "gateway",
+  "client_node_id": "client",
+  "mode": "general",
+  "log_level": "INFO",
+  "simulate": false,
+  "spool_dir": "~/.meshtastic_bridge_harness",
+  "loop": false,
+  "clear_spool": true
+}
