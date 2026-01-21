@@ -13,11 +13,14 @@ class BasicAckNack(AckNackMethod):
     """ACK on in-order delivery; NACK first missing sequence on gaps."""
 
     def handle_control(self, stream: "Stream", frame: Frame) -> List[Frame]:
+        # Import StreamState here to avoid circular import
+        from reliability.stream import StreamState
+        
         frames: List[Frame] = []
         if frame.is_ack():
             acked = stream.window.process_ack(frame.ack)
-            if acked and getattr(stream.state, "name", None) == "SYN_SENT":
-                stream.state = stream.state.__class__.OPEN
+            if acked and stream.state == StreamState.SYN_SENT:
+                stream.state = StreamState.OPEN
         if frame.is_nack():
             to_retransmit = stream.window.process_nack(frame.ack)
             if to_retransmit:
