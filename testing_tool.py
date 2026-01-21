@@ -90,6 +90,7 @@ def list_meshtastic_ports(timeout: float = 10.0, per_port_timeout: float = 2.0) 
                 try:
                     iface.close()
                 except Exception:
+                    # Ignore errors during cleanup - interface may already be closed
                     pass
     return radios
 
