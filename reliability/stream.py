@@ -9,8 +9,8 @@ from dataclasses import dataclass, field
 from framing.frame import Frame, FrameFlags
 from framing.codec import encode_frame
 from reliability.ack_methods.base import AckNackMethod
-from reliability.ack_methods.basic import BasicAckNack
-from reliability.window import SlidingWindow
+from reliability.ack_methods.smart import SmartAckNack
+from reliability.window import SlidingWindow, PendingFrame
 from common.logging_setup import get_logger
 from common.chunking import clamp_chunk_size, iter_chunks
 from common.config import Config
@@ -39,6 +39,10 @@ class StreamStats:
     frames_received: int = 0
     retransmits: int = 0
     created_at: float = field(default_factory=time.time)
+    rtt_count: int = 0
+    rtt_sum_ms: float = 0.0
+    rtt_max_ms: float = 0.0
+    max_pending: int = 0
 
 
 class Stream:
@@ -72,7 +76,7 @@ class Stream:
         self.remote_node_id = remote_node_id
         self.config = config or Config()
         self._send_callback = send_callback
-        self._ack_method = ack_method or BasicAckNack()
+        self._ack_method = ack_method or SmartAckNack()
         
         self.state = StreamState.CLOSED
         self.window = SlidingWindow(window_size=self.config.window_size)
@@ -108,6 +112,21 @@ class Stream:
             logger.debug(f"Stream {self.stream_id:#x}: Sent {frame}")
         
         return success
+
+    def record_ack_rtts(self, pendings: List[PendingFrame]) -> None:
+        """Record RTT stats for acknowledged frames."""
+        now = time.time()
+        for pending in pendings:
+            rtt_ms = max((now - pending.send_time) * 1000.0, 0.0)
+            self.stats.rtt_count += 1
+            self.stats.rtt_sum_ms += rtt_ms
+            if rtt_ms > self.stats.rtt_max_ms:
+                self.stats.rtt_max_ms = rtt_ms
+
+    def _update_max_pending(self) -> None:
+        pending = self.window.pending_count()
+        if pending > self.stats.max_pending:
+            self.stats.max_pending = pending
     
     def open(self) -> bool:
         """
@@ -136,6 +155,7 @@ class Stream:
             
             if self._send_frame(frame):
                 self.window.mark_sent(frame)
+                self._update_max_pending()
                 self.state = StreamState.SYN_SENT
                 logger.info(f"Stream {self.stream_id:#x}: SYN sent, state=SYN_SENT")
                 return True
@@ -168,6 +188,7 @@ class Stream:
             
             if self._send_frame(frame):
                 self.window.mark_sent(frame)
+                self._update_max_pending()
                 self.state = StreamState.OPEN
                 logger.info(f"Stream {self.stream_id:#x}: Accepted, state=OPEN")
                 return True
@@ -237,6 +258,7 @@ class Stream:
 
                     if self._send_frame(frame):
                         self.window.mark_sent(frame)
+                        self._update_max_pending()
                         sent += 1
                     else:
                         # Failed to send, put back in queue
@@ -377,6 +399,7 @@ class Stream:
             
             if self._send_frame(frame):
                 self.window.mark_sent(frame)
+                self._update_max_pending()
                 self.state = StreamState.FIN_SENT
                 logger.info(f"Stream {self.stream_id:#x}: FIN sent, state=FIN_SENT")
     

@@ -94,7 +94,7 @@ class SlidingWindow:
             seq = self._next_seq
             return seq
     
-    def process_ack(self, ack_num: int) -> List[Frame]:
+    def process_ack(self, ack_num: int) -> List[PendingFrame]:
         """
         Process an incoming ACK.
         
@@ -107,14 +107,14 @@ class SlidingWindow:
             List of frames that were acknowledged
         """
         with self._lock:
-            acked_frames = []
+            acked_frames: List[PendingFrame] = []
             
             # Find and remove all acknowledged frames
             seqs_to_remove = [seq for seq in self._pending.keys() if seq < ack_num]
             
             for seq in seqs_to_remove:
                 pending = self._pending.pop(seq)
-                acked_frames.append(pending.frame)
+                acked_frames.append(pending)
                 logger.debug(f"ACK received for seq={seq}")
             
             if acked_frames:
