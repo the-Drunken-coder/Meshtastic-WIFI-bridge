@@ -61,10 +61,11 @@ def detect_meshtastic_port() -> Optional[str]:
                         detection_result["node_id"] = node_id
                 except Exception as e:
                     detection_error["error"] = e
-                    # Make sure to close interface if it was created
-                    if detection_result["interface"]:
+                finally:
+                    interface = detection_result.get("interface")
+                    if interface:
                         try:
-                            detection_result["interface"].close()
+                            interface.close()
                         except Exception:
                             pass
             
@@ -73,22 +74,11 @@ def detect_meshtastic_port() -> Optional[str]:
             thread.start()
             thread.join(timeout=PORT_DETECTION_TIMEOUT)
             
-            # Clean up interface if thread completed
-            interface = detection_result.get("interface")
-            if interface:
-                try:
-                    if detection_result["success"]:
-                        # Success - close normally
-                        interface.close()
-                    else:
-                        # Failed or timed out - close anyway
-                        interface.close()
-                except Exception:
-                    pass
-            
             if thread.is_alive():
                 # Thread is still running - timeout occurred
-                logger.debug(f"Port {port_path} detection timed out after {PORT_DETECTION_TIMEOUT}s")
+                logger.debug(
+                    f"Port {port_path} detection timed out after {PORT_DETECTION_TIMEOUT}s"
+                )
                 continue
             
             # Check result

@@ -189,7 +189,7 @@ def select_serial_port() -> str:
         detected = detect_meshtastic_port()
         print("\r" + " " * 50 + "\r", end="")  # Clear the "Detecting..." message
         if detected:
-            print(f"✓ Auto-detected Meshtastic device: {detected}")
+            print(f"Auto-detected Meshtastic device: {detected}")
             return detected
     except Exception as e:
         print("\r" + " " * 50 + "\r", end="")  # Clear the "Detecting..." message
@@ -228,7 +228,7 @@ def select_network_interface() -> str:
     # Try to detect internet interface
     detected = detect_internet_interface()
     if detected:
-        print(f"✓ Auto-detected internet interface: {detected}")
+        print(f"Auto-detected internet interface: {detected}")
         return detected
     
     # No detection - show selection menu

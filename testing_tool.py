@@ -11,16 +11,21 @@ Requires meshtastic>=2.0.0 installed.
 """
 
 import argparse
+import random
 import sys
 import time
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 from meshtastic.serial_interface import SerialInterface
 from pubsub import pub
 
+from common.config import Config
 # Use shared port number with transport layer
 from transport.meshtastic_transport import MeshtasticTransport
+from framing.codec import decode_frame, FrameDecodeError
+from reliability.stream import Stream, StreamState
+from reliability.retransmit import RetransmitTimer
 
 # Map friendly mode names to Meshtastic modem presets
 MODE_PRESETS = {
@@ -49,7 +54,17 @@ class RadioInfo:
     node_id: int
 
 
-def list_meshtastic_ports(timeout: float = 3.0) -> List[RadioInfo]:
+@dataclass
+class StreamLink:
+    stream_id: int
+    gateway_stream: Stream
+    client_stream: Stream
+    retransmit_timer: RetransmitTimer
+    suppress_rx_output: bool = False
+    on_rx: Optional[Callable[..., None]] = None
+
+
+def list_meshtastic_ports(timeout: float = 10.0, per_port_timeout: float = 2.0) -> List[RadioInfo]:
     """Detect Meshtastic radios on available serial ports."""
     import serial.tools.list_ports
 
@@ -60,13 +75,22 @@ def list_meshtastic_ports(timeout: float = 3.0) -> List[RadioInfo]:
         if time.monotonic() - start_time > timeout:
             break
         port_path = port.device
+        iface = None
         try:
-            iface = SerialInterface(port_path, debugOut=None, noProto=True)
+            iface = SerialInterface(port_path, debugOut=None)
+            deadline = time.monotonic() + per_port_timeout
+            while time.monotonic() < deadline and not iface.myInfo:
+                time.sleep(0.1)
             if iface.myInfo:
                 radios.append(RadioInfo(port=port_path, node_id=iface.myInfo.my_node_num))
-            iface.close()
         except Exception:
             continue
+        finally:
+            if iface:
+                try:
+                    iface.close()
+                except Exception:
+                    pass
     return radios
 
 
@@ -117,53 +141,84 @@ def select_two_radios(radios: List[RadioInfo]) -> Tuple[RadioInfo, RadioInfo]:
     return radios[g_idx], radios[c_idx]
 
 
-def set_modem_preset(iface: SerialInterface, preset_name: str) -> None:
-    """Apply a modem preset by name."""
+def _get_modem_preset_enum():
     try:
         from meshtastic.protobufs import config_pb2
     except ImportError:
+        try:
+            from meshtastic.protobuf import config_pb2
+        except ImportError:
+            return None
+    lora_config = getattr(config_pb2.Config, "LoRaConfig", None) or getattr(
+        config_pb2.Config, "LoraConfig", None
+    )
+    if not lora_config:
+        return None
+    return lora_config.ModemPreset
+
+
+def set_modem_preset(iface: SerialInterface, preset_name: str) -> None:
+    """Apply a modem preset by name."""
+    modem_preset_enum = _get_modem_preset_enum()
+    if not modem_preset_enum:
         print("meshtastic protobufs not available; cannot set preset.")
         return
 
-    preset = getattr(config_pb2.Config.LoraConfig.ModemPreset, preset_name, None)
-    if preset is None:
+    preset_value = getattr(modem_preset_enum, preset_name, None)
+    if preset_value is None:
         print(f"Unknown preset {preset_name}, skipping.")
         return
-    iface.localConfig.lora.modem_preset = preset
-    iface.writeConfig("lora")
-    iface.waitForConfig()
+    
+    try:
+        iface.localNode.localConfig.lora.modem_preset = preset_value
+        iface.localNode.writeConfig("lora")
+        time.sleep(0.1)
+        iface.waitForConfig()
+    except Exception as e:
+        print(f"Failed to apply modem preset '{preset_name}': {e}")
 
 
-def send_test_message(src: SerialInterface, dest_id: int, text: str) -> None:
+def send_test_message(stream: Stream, text: str) -> None:
     payload = text.encode("utf-8")
-    src.sendData(payload, destinationId=dest_id, portNum=MeshtasticTransport.PORTNUM, wantAck=False)
+    queued = stream.send(payload)
+    if queued == 0:
+        print("Send failed.")
 
 
-def measure_bandwidth(src: SerialInterface, dest: SerialInterface, bytes_len: int = 2048) -> float:
-    """Send a payload and measure effective throughput using ACK timing; return bytes/sec."""
+def measure_bandwidth(
+    sender: Stream,
+    receiver: Stream,
+    bytes_len: int = 2048,
+    timeout_s: float = 60.0,
+) -> float:
+    """Send a payload and measure effective throughput; return bytes/sec."""
     data = b"x" * bytes_len
-    start = time.time()
-    src.sendData(
-        data,
-        destinationId=dest.myInfo.my_node_num,
-        portNum=MeshtasticTransport.PORTNUM,
-        wantAck=True,
-    )
-    # Prefer waiting for an actual acknowledgment if supported.
-    if hasattr(src, "waitForAck"):
-        try:
-            src.waitForAck(timeout=10.0)
-        except Exception:
-            pass
-    end = time.time()
-    duration = max(end - start, 0.001)
-    return bytes_len / duration
+    start = time.monotonic()
+    queued = sender.send(data)
+    if queued == 0:
+        return 0.0
+
+    received = 0
+    deadline = start + timeout_s
+    while received < bytes_len:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        chunk = receiver.recv(
+            max_bytes=min(4096, bytes_len - received),
+            timeout=remaining,
+        )
+        if not chunk:
+            if receiver.state in (StreamState.CLOSED, StreamState.FIN_RECV):
+                break
+            continue
+        received += len(chunk)
+
+    duration = max(time.monotonic() - start, 0.001)
+    return received / duration
 
 
-def interactive_ui(gateway: SerialInterface, client: SerialInterface) -> None:
-    client_id = client.myInfo.my_node_num
-    gateway_id = gateway.myInfo.my_node_num
-
+def interactive_ui(link: StreamLink, gateway_iface: SerialInterface, client_iface: SerialInterface) -> None:
     while True:
         print("\nMeshtastic Test UI")
         print("1) Send message from gateway -> client")
@@ -175,38 +230,174 @@ def interactive_ui(gateway: SerialInterface, client: SerialInterface) -> None:
 
         if choice == "1":
             msg = input("Enter message: ")
-            send_test_message(gateway, client_id, msg)
+            send_test_message(link.gateway_stream, msg)
             print("Sent.")
         elif choice == "2":
             msg = input("Enter message: ")
-            send_test_message(client, gateway_id, msg)
+            send_test_message(link.client_stream, msg)
             print("Sent.")
         elif choice == "3":
-            bw = measure_bandwidth(client, gateway)
+            link.suppress_rx_output = True
+            try:
+                bw = measure_bandwidth(link.client_stream, link.gateway_stream)
+            finally:
+                link.suppress_rx_output = False
             print(f"Approx bandwidth: {bw:.1f} bytes/sec")
         elif choice == "4":
-            run_bandwidth_comparison(client, gateway)
+            run_bandwidth_comparison(link, client_iface, gateway_iface)
         elif choice == "5":
             break
         else:
             print("Invalid choice.")
 
 
-def run_bandwidth_comparison(client: SerialInterface, gateway: SerialInterface) -> None:
+def run_bandwidth_comparison(
+    link: StreamLink,
+    client_iface: SerialInterface,
+    gateway_iface: SerialInterface,
+) -> None:
     """Iterate presets and measure bandwidth for each."""
     results = []
-    for key, preset_name in MODE_PRESETS.items():
-        label = MODE_LABELS.get(key, key)
-        print(f"Setting mode: {label} ({preset_name})")
-        set_modem_preset(client, preset_name)
-        set_modem_preset(gateway, preset_name)
-        time.sleep(3.0)
-        bw = measure_bandwidth(client, gateway)
-        results.append((label, bw))
-        print(f"  {label}: {bw:.1f} bytes/sec")
+    client_original = getattr(
+        getattr(client_iface.localNode.localConfig, "lora", None), "modem_preset", None
+    )
+    gateway_original = getattr(
+        getattr(gateway_iface.localNode.localConfig, "lora", None), "modem_preset", None
+    )
+    try:
+        for key, preset_name in MODE_PRESETS.items():
+            label = MODE_LABELS.get(key, key)
+            print(f"Setting mode: {label} ({preset_name})")
+            set_modem_preset(client_iface, preset_name)
+            set_modem_preset(gateway_iface, preset_name)
+            time.sleep(3.0)
+            link.suppress_rx_output = True
+            try:
+                bw = measure_bandwidth(link.client_stream, link.gateway_stream)
+            finally:
+                link.suppress_rx_output = False
+            results.append((label, bw))
+            print(f"  {label}: {bw:.1f} bytes/sec")
+    finally:
+        if client_original is not None:
+            client_iface.localNode.localConfig.lora.modem_preset = client_original
+            client_iface.localNode.writeConfig("lora")
+            time.sleep(0.1)
+            client_iface.waitForConfig()
+        if gateway_original is not None:
+            gateway_iface.localNode.localConfig.lora.modem_preset = gateway_original
+            gateway_iface.localNode.writeConfig("lora")
+            time.sleep(0.1)
+            gateway_iface.waitForConfig()
     print("\nSummary:")
     for label, bw in results:
         print(f"- {label}: {bw:.1f} bytes/sec")
+
+
+def _make_send_callback(
+    iface: SerialInterface,
+    dest_id: int,
+) -> Callable[[bytes], bool]:
+    def send(data: bytes) -> bool:
+        packet = iface.sendData(
+            data,
+            destinationId=dest_id,
+            portNum=MeshtasticTransport.PORTNUM,
+            wantAck=False,
+        )
+        return packet is not None
+    return send
+
+
+def setup_stream_link(gateway_iface: SerialInterface, client_iface: SerialInterface) -> StreamLink:
+    gateway_id = gateway_iface.myInfo.my_node_num
+    client_id = client_iface.myInfo.my_node_num
+    stream_id = random.randint(1, 0x7FFFFFFF)
+    config = Config()
+
+    gateway_stream = Stream(
+        stream_id=stream_id,
+        remote_node_id=client_id,
+        config=config,
+        send_callback=_make_send_callback(gateway_iface, client_id),
+    )
+    client_stream = Stream(
+        stream_id=stream_id,
+        remote_node_id=gateway_id,
+        config=config,
+        send_callback=_make_send_callback(client_iface, gateway_id),
+    )
+
+    link = StreamLink(
+        stream_id=stream_id,
+        gateway_stream=gateway_stream,
+        client_stream=client_stream,
+        retransmit_timer=RetransmitTimer(
+            interval_ms=1000,
+            callback=lambda: (
+                gateway_stream.check_retransmits(),
+                client_stream.check_retransmits(),
+            ),
+        ),
+    )
+
+    def on_rx(packet=None, interface=None, **_kwargs):
+        decoded = packet.get("decoded", {})
+        portnum = decoded.get("portnum")
+        if portnum not in ("PRIVATE_APP", MeshtasticTransport.PORTNUM):
+            return
+        payload = decoded.get("payload", b"")
+        if isinstance(payload, str):
+            payload = payload.encode("latin-1")
+        try:
+            frame = decode_frame(payload)
+        except FrameDecodeError:
+            return
+        if frame.stream_id != link.stream_id:
+            return
+
+        if interface == gateway_iface:
+            stream = link.gateway_stream
+            label = "gateway"
+        elif interface == client_iface:
+            stream = link.client_stream
+            label = "client"
+        else:
+            return
+
+        if frame.is_syn() and stream.state == StreamState.CLOSED:
+            stream.window.receive_frame(frame)
+            stream.accept()
+            return
+
+        stream.receive_frame(frame)
+
+        if link.suppress_rx_output:
+            return
+
+        data = stream.recv(max_bytes=4096, timeout=0)
+        if data:
+            src = packet.get("fromId") or packet.get("from")
+            try:
+                src_int = int(str(src).replace("!", ""), 16) if isinstance(src, str) else int(src)
+            except Exception:
+                src_int = src
+            print(f"\nRX from {src_int} ({label}): {data}")
+
+    pub.subscribe(on_rx, "meshtastic.receive.data")
+    link.on_rx = on_rx
+
+    if not client_stream.open():
+        print("Warning: failed to send SYN for test stream.")
+    else:
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and client_stream.state != StreamState.OPEN:
+            time.sleep(0.1)
+        if client_stream.state != StreamState.OPEN:
+            print("Warning: test stream not open yet; proceeding anyway.")
+
+    link.retransmit_timer.start()
+    return link
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -226,29 +417,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     gateway_iface = SerialInterface(gateway_info.port)
     client_iface = SerialInterface(client_info.port)
 
-    # subscribe to print received text payloads
-    def on_rx(packet, _iface):
-        decoded = packet.get("decoded", {})
-        if decoded.get("portnum") not in ("PRIVATE_APP", MeshtasticTransport.PORTNUM):
-            return
-        payload = decoded.get("payload", b"")
-        if isinstance(payload, str):
-            payload = payload.encode("latin-1")
-        src = packet.get("fromId") or packet.get("from")
-        try:
-            src_int = int(str(src).replace("!", ""), 16) if isinstance(src, str) else int(src)
-        except Exception:
-            src_int = src
-        print(f"\nRX from {src_int}: {payload}")
-
-    pub.subscribe(on_rx, "meshtastic.receive.data")
+    link = setup_stream_link(gateway_iface, client_iface)
 
     try:
-        interactive_ui(gateway_iface, client_iface)
+        interactive_ui(link, gateway_iface, client_iface)
     finally:
+        link.retransmit_timer.stop()
+        if link.on_rx:
+            pub.unsubscribe(link.on_rx, "meshtastic.receive.data")
         gateway_iface.close()
         client_iface.close()
-        pub.unsubscribe(on_rx, "meshtastic.receive.data")
 
     return 0
 

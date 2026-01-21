@@ -79,17 +79,27 @@ class MeshtasticTransport:
                 try:
                     from meshtastic.protobufs import config_pb2
 
-                    preset_value = getattr(
-                        config_pb2.Config.LoraConfig.ModemPreset, self._modem_preset, None
-                    )
-                    if preset_value is not None:
-                        self._interface.localConfig.lora.modem_preset = preset_value
-                        self._interface.writeConfig("lora")
-                        time.sleep(0.1)
-                        self._interface.waitForConfig()
-                        logger.info(f"Applied modem preset: {self._modem_preset}")
+                    lora_config = getattr(
+                        config_pb2.Config, "LoRaConfig", None
+                    ) or getattr(config_pb2.Config, "LoraConfig", None)
+                    if not lora_config:
+                        logger.warning(
+                            "Meshtastic config missing LoRaConfig enum; skipping preset apply"
+                        )
                     else:
-                        logger.warning(f"Unknown modem preset '{self._modem_preset}', skipping apply")
+                        preset_value = getattr(
+                            lora_config.ModemPreset, self._modem_preset, None
+                        )
+                        if preset_value is not None:
+                            self._interface.localConfig.lora.modem_preset = preset_value
+                            self._interface.writeConfig("lora")
+                            time.sleep(0.1)
+                            self._interface.waitForConfig()
+                            logger.info(f"Applied modem preset: {self._modem_preset}")
+                        else:
+                            logger.warning(
+                                f"Unknown modem preset '{self._modem_preset}', skipping apply"
+                            )
                 except Exception as e:
                     logger.warning(f"Failed to apply modem preset '{self._modem_preset}': {e}")
             
