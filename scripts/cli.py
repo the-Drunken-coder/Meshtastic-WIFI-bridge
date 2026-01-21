@@ -7,8 +7,6 @@ import json
 import logging
 import os
 import sys
-import threading
-import time
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, Optional
