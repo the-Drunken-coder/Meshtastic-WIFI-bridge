@@ -1,0 +1,49 @@
+{
+  "description": "Test scenario configurations for the dual radio harness runner",
+  "default_command": "http_request",
+  "default_payload": {
+    "url": "https://example.com",
+    "method": "GET"
+  },
+  "scenarios": [
+    {
+      "name": "short_turbo_default",
+      "description": "SHORT_TURBO preset with default segment size",
+      "overrides": {
+        "modem_preset": "SHORT_TURBO"
+      }
+    },
+    {
+      "name": "long_fast_small_segments",
+      "description": "LONG_FAST preset with 100 byte segments",
+      "overrides": {
+        "modem_preset": "LONG_FAST",
+        "transport": {
+          "segment_size": 100
+        }
+      }
+    },
+    {
+      "name": "medium_slow_large_segments",
+      "description": "MEDIUM_SLOW preset with 200 byte segments",
+      "overrides": {
+        "modem_preset": "MEDIUM_SLOW",
+        "transport": {
+          "segment_size": 200
+        }
+      }
+    },
+    {
+      "name": "short_fast_aggressive",
+      "description": "SHORT_FAST with aggressive NACK settings",
+      "overrides": {
+        "modem_preset": "SHORT_FAST",
+        "transport": {
+          "segment_size": 150,
+          "nack_max_per_seq": 5,
+          "nack_interval": 0.5
+        }
+      }
+    }
+  ]
+}
