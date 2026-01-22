@@ -337,9 +337,9 @@ def main() -> None:
         "Resolved mode=%s reliability=%s timeout=%.1fs post_response_timeout=%.1fs retries=%s modem_preset=%s",
         config.get("mode"),
         config.get("reliability_method"),
-        float(config.get("timeout", 0)),
-        float(config.get("post_response_timeout", 0)),
-        config.get("retries"),
+        float(config["timeout"]),
+        float(config["post_response_timeout"]),
+        config["retries"],
         config.get("modem_preset"),
     )
     spool_dir = config.get("spool_dir")
@@ -423,10 +423,10 @@ def main() -> None:
     try:
         diagnostics = interactive_loop(
             client,
-            timeout=float(config.get("timeout", 30.0)),
-            retries=int(config.get("retries", 2)),
-            quiet_window=float(config.get("post_response_quiet", 10.0)),
-            quiet_timeout=float(config.get("post_response_timeout", 90.0)),
+            timeout=float(config["timeout"]),
+            retries=int(config["retries"]),
+            quiet_window=float(config["post_response_quiet"]),
+            quiet_timeout=float(config["post_response_timeout"]),
             stop_event=stop_event,
             loop=bool(config.get("loop", False)),
             context=context,

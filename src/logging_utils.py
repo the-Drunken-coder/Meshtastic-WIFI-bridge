@@ -11,5 +11,5 @@ def configure_logging(level: str, log_file: str | None = None) -> None:
         level=getattr(logging, level_name, logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
         filename=filename,
-        filemode="w" if filename else "a",
+        filemode="a",
     )
