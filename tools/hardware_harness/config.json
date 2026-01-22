@@ -4,8 +4,12 @@
   "gateway_node_id": "gateway",
   "client_node_id": "client",
   "mode": "general",
-  "log_level": "INFO",
+  "timeout": 30.0,
+  "log_level": "DEBUG",
+  "log_file": "logs.text",
   "simulate": false,
+  "disable_dedupe": false,
+  "dedupe_lease_seconds": 8.0,
   "spool_dir": "~/.meshtastic_bridge_harness",
   "loop": false,
   "clear_spool": true

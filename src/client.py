@@ -50,6 +50,30 @@ class MeshtasticClient:
             data["payload"] = payload
         return self._send_typed("payload_digest", data, timeout, max_retries)
 
+    def http_request(
+        self,
+        *,
+        url: str,
+        method: str | None = None,
+        headers: Dict[str, Any] | None = None,
+        body: Any | None = None,
+        body_b64: str | None = None,
+        timeout: Optional[float] = None,
+        max_retries: Optional[int] = None,
+    ) -> MessageEnvelope:
+        data: Dict[str, Any] = {"url": url}
+        if method:
+            data["method"] = method
+        if headers:
+            data["headers"] = headers
+        if body is not None:
+            data["body"] = body
+        if body_b64 is not None:
+            data["body_b64"] = body_b64
+        if timeout is not None:
+            data["timeout"] = timeout
+        return self._send_typed("http_request", data, timeout, max_retries)
+
     def _send_typed(
         self,
         command: str,

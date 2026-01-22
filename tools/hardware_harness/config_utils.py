@@ -29,7 +29,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "timeout": 90.0,
     "retries": 2,
     "log_level": "INFO",
+    "log_file": None,
     "simulate": False,
+    "disable_dedupe": False,
+    "dedupe_lease_seconds": 8.0,
     "spool_dir": os.path.expanduser("~/.meshtastic_bridge_harness"),
     "post_response_quiet": 10.0,
     "post_response_timeout": 150.0,
@@ -40,6 +43,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 
 # Fixed transport settings; no external tuning file is used for now.
 BASE_TRANSPORT_DEFAULTS: Dict[str, Any] = {
+    "segment_size": 221,
     "chunk_ttl_per_chunk": 25.0,
     "chunk_ttl_max": 3600.0,
     # No pacing by default; set thresholds explicitly if needed.

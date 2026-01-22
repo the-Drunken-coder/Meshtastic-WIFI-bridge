@@ -116,26 +116,18 @@ def _apply_modem_preset(preset_name: str, gateway_port: str, client_port: str, s
         except Exception as exc:  # pragma: no cover - hardware-only path
             logging.warning("Failed to set preset %s on %s (%s): %s", preset_name, name, port, exc)
 
-def interactive_loop(
-    client: MeshtasticClient,
-    timeout: float,
-    retries: int,
-    quiet_window: float,
-    quiet_timeout: float,
+def prompt_action(
+    actions: List[str],
+    descriptions: Dict[str, str],
+    context: Dict[str, Any],
     stop_event: threading.Event,
-    loop: bool,
-) -> List[Dict[str, Any]]:
-    actions = list(COMMAND_PRESETS.keys())
-    descriptions = {cmd: meta.get("description", "") for cmd, meta in COMMAND_PRESETS.items()}
-    diagnostics: List[Dict[str, Any]] = []
-    context = default_context()
-
+) -> tuple[str, Dict[str, Any]] | None:
     while not stop_event.is_set():
         render_menu(actions, descriptions)
         choice = input("Select an action: ").strip().lower()
         if choice in {"q", "quit", "exit"}:
             stop_event.set()
-            break
+            return None
         # Resolve command and prompt for payload
         if choice == "c":
             command = input("Command name: ").strip()
@@ -151,6 +143,41 @@ def interactive_loop(
                 continue
             fields = COMMAND_PRESETS.get(command, {}).get("fields", [])
             payload = prompt_for_payload(apply_field_defaults(command, fields, context))
+        return command, payload
+    return None
+
+
+def interactive_loop(
+    client: MeshtasticClient,
+    timeout: float,
+    retries: int,
+    quiet_window: float,
+    quiet_timeout: float,
+    stop_event: threading.Event,
+    loop: bool,
+    *,
+    context: Dict[str, Any] | None = None,
+    initial_command: str | None = None,
+    initial_payload: Dict[str, Any] | None = None,
+) -> List[Dict[str, Any]]:
+    actions = list(COMMAND_PRESETS.keys())
+    descriptions = {cmd: meta.get("description", "") for cmd, meta in COMMAND_PRESETS.items()}
+    diagnostics: List[Dict[str, Any]] = []
+    context = context or default_context()
+    pending_command = initial_command
+    pending_payload = initial_payload
+
+    while not stop_event.is_set():
+        if pending_command:
+            command = pending_command
+            payload = pending_payload or {}
+            pending_command = None
+            pending_payload = None
+        else:
+            selection = prompt_action(actions, descriptions, context, stop_event)
+            if selection is None:
+                break
+            command, payload = selection
 
         run_start = time.time()
         request_bytes = len(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
@@ -197,6 +224,16 @@ def interactive_loop(
                     timeout=timeout,
                     max_retries=retries,
                 )
+            elif command == "http_request":
+                if payload.get("headers") in {"", None}:
+                    payload.pop("headers", None)
+                if payload.get("body") in {"", None}:
+                    payload.pop("body", None)
+                response = client.http_request(
+                    timeout=timeout,
+                    max_retries=retries,
+                    **payload,
+                )
             elif hasattr(client, command):
                 typed = getattr(client, command)
                 if callable(typed):
@@ -215,6 +252,23 @@ def interactive_loop(
             if response is not None:
                 print("\n--- Response ---")
                 print(json.dumps(response.to_dict(), indent=2))
+                if response.command == "http_request":
+                    result = (response.data or {}).get("result", {})
+                    content_b64 = result.get("content_b64")
+                    if content_b64:
+                        try:
+                            decoded = base64.b64decode(content_b64)
+                            try:
+                                text = decoded.decode("utf-8")
+                                print("\n--- HTTP Content ---")
+                                print(text)
+                            except UnicodeDecodeError:
+                                print(
+                                    "\n--- HTTP Content ---\n"
+                                    f"(binary content, {len(decoded)} bytes)"
+                                )
+                        except Exception as exc:
+                            print(f"\n--- HTTP Content ---\n(decode failed: {exc})")
                 ack_spool_entry(client.transport, response.id)
                 update_context_from_payload(command, payload, context)
                 response_type = response.type
@@ -270,7 +324,10 @@ def interactive_loop(
 def main() -> None:
     args = parse_args()
     config = load_config(args.config)
-    configure_logging(config.get("log_level", "INFO"))
+    configure_logging(
+        config.get("log_level", "INFO"),
+        log_file=config.get("log_file"),
+    )
     logging.info(
         "Resolved mode=%s reliability=%s timeout=%.1fs post_response_timeout=%.1fs retries=%s modem_preset=%s",
         config.get("mode"),
@@ -291,6 +348,14 @@ def main() -> None:
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
 
+    actions = list(COMMAND_PRESETS.keys())
+    descriptions = {cmd: meta.get("description", "") for cmd, meta in COMMAND_PRESETS.items()}
+    context = default_context()
+    selection = prompt_action(actions, descriptions, context, stop_event)
+    if selection is None:
+        return
+    initial_command, initial_payload = selection
+
     gateway_port, client_port = resolve_ports(config)
     logging.info("Using gateway port %s and client port %s", gateway_port, client_port)
 
@@ -307,6 +372,9 @@ def main() -> None:
         config.get("gateway_node_id", "gateway"),
         spool_dir,
         "gateway",
+        disable_dedupe=bool(config.get("disable_dedupe", False)),
+        dedupe_lease_seconds=config.get("dedupe_lease_seconds"),
+        segment_size=int(TRANSPORT_DEFAULTS.get("segment_size", 200)),
         chunk_ttl_per_chunk=float(TRANSPORT_DEFAULTS.get("chunk_ttl_per_chunk", 20.0)),
         chunk_ttl_max=float(TRANSPORT_DEFAULTS.get("chunk_ttl_max", 1800.0)),
         chunk_delay_threshold=TRANSPORT_DEFAULTS.get("chunk_delay_threshold"),
@@ -320,6 +388,9 @@ def main() -> None:
         config.get("client_node_id", "client"),
         spool_dir,
         "client",
+        disable_dedupe=bool(config.get("disable_dedupe", False)),
+        dedupe_lease_seconds=config.get("dedupe_lease_seconds"),
+        segment_size=int(TRANSPORT_DEFAULTS.get("segment_size", 200)),
         chunk_ttl_per_chunk=float(TRANSPORT_DEFAULTS.get("chunk_ttl_per_chunk", 20.0)),
         chunk_ttl_max=float(TRANSPORT_DEFAULTS.get("chunk_ttl_max", 1800.0)),
         chunk_delay_threshold=TRANSPORT_DEFAULTS.get("chunk_delay_threshold"),
@@ -353,6 +424,9 @@ def main() -> None:
             quiet_timeout=float(config.get("post_response_timeout", 90.0)),
             stop_event=stop_event,
             loop=bool(config.get("loop", False)),
+            context=context,
+            initial_command=initial_command,
+            initial_payload=initial_payload,
         )
     finally:
         stop_event.set()

@@ -32,13 +32,19 @@ def build_transport(
     chunk_delay_seconds: float,
     nack_max_per_seq: int,
     nack_interval: float,
+    disable_dedupe: bool = False,
+    dedupe_lease_seconds: float | None = None,
+    segment_size: int = 200,
 ) -> MeshtasticTransport:
     os.makedirs(spool_dir, exist_ok=True)
-    radio = build_radio(simulate, port, node_id)
+    radio = build_radio(simulate, port, node_id, disable_dedupe=disable_dedupe)
     spool_path = os.path.join(spool_dir, f"{spool_name}_spool.json")
     return MeshtasticTransport(
         radio,
         spool_path=spool_path,
+        disable_dedupe=disable_dedupe,
+        dedupe_lease_seconds=dedupe_lease_seconds,
+        segment_size=segment_size,
         chunk_ttl_per_chunk=chunk_ttl_per_chunk,
         chunk_ttl_max=chunk_ttl_max,
         chunk_delay_threshold=chunk_delay_threshold,

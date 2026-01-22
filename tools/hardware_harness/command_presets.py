@@ -36,6 +36,15 @@ COMMAND_PRESETS: Dict[str, Dict[str, Any]] = {
         "description": "Check gateway health",
         "fields": [],
     },
+    "http_request": {
+        "description": "Fetch a URL via the gateway (HTTP)",
+        "fields": [
+            {"name": "url", "prompt": "URL", "default": "https://example.com"},
+            {"name": "method", "prompt": "HTTP method", "default": "GET"},
+            {"name": "headers", "prompt": "Headers JSON (optional)", "default": ""},
+            {"name": "body", "prompt": "Body text (optional)", "default": ""},
+        ],
+    },
 }
 
 
