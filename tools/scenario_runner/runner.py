@@ -180,7 +180,7 @@ def run_single_test(
 ) -> tuple[str, float, int, int, Optional[str], Optional[Dict[str, Any]], Optional[str]]:
     """
     Run a single test command and return results.
-    Returns: (status, duration, request_bytes, response_bytes, error, response_data)
+    Returns: (status, duration, request_bytes, response_bytes, error, response_data, response_id)
     """
     run_start = time.time()
     request_bytes = len(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
@@ -251,6 +251,9 @@ def run_scenario(
     print(f"Overrides: {json.dumps(scenario.overrides, indent=2)}")
     print(f"{'='*60}\n")
 
+    # Reset transport defaults to prevent cross-scenario state leakage
+    TRANSPORT_DEFAULTS.clear()
+    
     # Reload base config to get fresh mode defaults (including transport settings)
     config = load_config(str(HARNESS_CONFIG_PATH))
 
@@ -648,7 +651,7 @@ def main() -> None:
                 description=scenario.description,
                 overrides=scenario.overrides,
                 command=selected_command,
-                payload=payload,
+                payload=scenario_payload,
                 status="error",
                 duration_seconds=0.0,
                 request_bytes=0,

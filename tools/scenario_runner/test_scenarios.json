@@ -7,11 +7,12 @@
   },
   "scenarios": [
     {
-      "name": "payload_1kb",
-      "description": "Payload size 1 KB",
+      "name": "short_turbo_1kb",
+      "description": "SHORT_TURBO preset with 1 KB payload",
       "overrides": {
+        "modem_preset": "SHORT_TURBO",
         "transport": {
-          "segment_size": 202
+          "segment_size": 100
         }
       },
       "payload_overrides": {
@@ -19,11 +20,12 @@
       }
     },
     {
-      "name": "payload_4kb",
-      "description": "Payload size 4 KB",
+      "name": "long_fast_4kb",
+      "description": "LONG_FAST preset with 4 KB payload",
       "overrides": {
+        "modem_preset": "LONG_FAST",
         "transport": {
-          "segment_size": 202
+          "segment_size": 100
         }
       },
       "payload_overrides": {
@@ -31,11 +33,12 @@
       }
     },
     {
-      "name": "payload_8kb",
-      "description": "Payload size 8 KB",
+      "name": "medium_slow_8kb",
+      "description": "MEDIUM_SLOW preset with 8 KB payload",
       "overrides": {
+        "modem_preset": "MEDIUM_SLOW",
         "transport": {
-          "segment_size": 202
+          "segment_size": 100
         }
       },
       "payload_overrides": {
@@ -43,11 +46,12 @@
       }
     },
     {
-      "name": "payload_16kb",
-      "description": "Payload size 16 KB",
+      "name": "short_fast_16kb",
+      "description": "SHORT_FAST preset with 16 KB payload",
       "overrides": {
+        "modem_preset": "SHORT_FAST",
         "transport": {
-          "segment_size": 202
+          "segment_size": 100
         }
       },
       "payload_overrides": {
@@ -55,11 +59,12 @@
       }
     },
     {
-      "name": "payload_32kb",
-      "description": "Payload size 32 KB",
+      "name": "short_turbo_32kb",
+      "description": "SHORT_TURBO preset with 32 KB payload",
       "overrides": {
+        "modem_preset": "SHORT_TURBO",
         "transport": {
-          "segment_size": 202
+          "segment_size": 100
         }
       },
       "payload_overrides": {
