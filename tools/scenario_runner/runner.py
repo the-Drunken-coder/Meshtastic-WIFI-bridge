@@ -106,26 +106,27 @@ def load_test_scenarios(path: str) -> tuple[List[TestScenario], str, Dict[str, A
     return scenarios, default_command, default_payload
 
 
-def apply_overrides(base_config: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
+def apply_overrides(base_config: Dict[str, Any], overrides: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, Any]]:
     """
-    Apply scenario overrides to the base config and global transport defaults.
+    Apply scenario overrides to the base config.
 
-    Non-transport keys are applied directly to a copy of base_config, and the
-    resulting dictionary is returned. If the "transport" key is present and is
-    a dict, its entries are merged into the global TRANSPORT_DEFAULTS and are
-    not added directly to the returned config.
+    Non-transport keys are applied directly to a copy of base_config.
+    Transport overrides are extracted and returned separately.
+
+    Returns:
+        A tuple of (config_with_overrides, transport_overrides)
     """
     config = dict(base_config)
+    transport_overrides: Dict[str, Any] = {}
     
     for key, value in overrides.items():
         if key == "transport" and isinstance(value, dict):
-            # Merge transport overrides into TRANSPORT_DEFAULTS
-            for tk, tv in value.items():
-                TRANSPORT_DEFAULTS[tk] = tv
+            # Extract transport overrides to return separately
+            transport_overrides = dict(value)
         else:
             config[key] = value
     
-    return config
+    return config, transport_overrides
 
 
 def _apply_modem_preset(preset_name: str, gateway_port: str, client_port: str, simulate: bool) -> None:
@@ -234,7 +235,6 @@ def run_single_test(
 
 def run_scenario(
     scenario: TestScenario,
-    base_config: Dict[str, Any],
     command: str,
     payload: Dict[str, Any],
     stop_event: threading.Event,
@@ -250,7 +250,12 @@ def run_scenario(
     config = load_config(str(HARNESS_CONFIG_PATH))
 
     # Apply scenario overrides
-    config = apply_overrides(config, scenario.overrides)
+    config, transport_overrides = apply_overrides(config, scenario.overrides)
+    
+    # Apply transport overrides to the global TRANSPORT_DEFAULTS
+    # (which was already reset by load_config)
+    if transport_overrides:
+        TRANSPORT_DEFAULTS.update(transport_overrides)
     
     gateway_port, client_port = resolve_ports(config)
     spool_dir = config.get("spool_dir")
@@ -305,14 +310,31 @@ def run_scenario(
     gateway, gateway_thread = start_gateway(transport=gateway_transport)
     client = MeshtasticClient(client_transport, gateway_node_id=gateway_node_id)
 
+    # Validate required configuration values
+    timeout_value = config.get("timeout")
+    retries_value = config.get("retries")
+    if timeout_value is None:
+        raise ValueError("Scenario configuration missing required 'timeout' value")
+    if retries_value is None:
+        raise ValueError("Scenario configuration missing required 'retries' value")
+
+    # Initialize variables in case of exception
+    status = "error"
+    duration = 0.0
+    req_bytes = 0
+    resp_bytes = 0
+    error = "Test did not complete"
+    resp_data = None
+    chunks_sent = 0
+
     try:
         chunks_before = _get_outbound_chunk_total()
         status, duration, req_bytes, resp_bytes, error, resp_data = run_single_test(
             client,
             command,
             payload,
-            timeout=float(config["timeout"]),
-            retries=int(config["retries"]),
+            timeout=float(timeout_value),
+            retries=int(retries_value),
         )
         chunks_after = _get_outbound_chunk_total()
         chunks_sent = max(0, chunks_after - chunks_before)
@@ -352,7 +374,7 @@ def format_results(results: List[TestResult]) -> str:
     """Format test results as a human-readable text report."""
     lines = []
     lines.append("=" * 70)
-    lines.append("MESHTASTIC WIFI BRIDGE - TEST RESULTS")
+    lines.append("MESHTASTIC BRIDGE - TEST RESULTS")
     lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     lines.append("=" * 70)
     lines.append("")
@@ -519,7 +541,14 @@ def prompt_payload_for_command(command: str, default_payload: Dict[str, Any]) ->
     
     elif command == "payload_digest":
         size_kb = input("  Size in KB [10]: ").strip()
-        return {"size_kb": int(size_kb) if size_kb else 10}
+        if not size_kb:
+            return {"size_kb": 10}
+        try:
+            size_kb_int = int(size_kb)
+        except ValueError:
+            print("  Invalid size; using default 10 KB.")
+            size_kb_int = 10
+        return {"size_kb": size_kb_int}
     
     return default_payload
 
@@ -603,7 +632,6 @@ def main() -> None:
         try:
             result = run_scenario(
                 scenario=scenario,
-                base_config=config,
                 command=selected_command,
                 payload=payload,
                 stop_event=stop_event,
