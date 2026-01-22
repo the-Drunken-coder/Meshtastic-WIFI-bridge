@@ -26,8 +26,9 @@ HEADER_STRUCT = struct.Struct("!2sBB8sHH")
 HEADER_SIZE = HEADER_STRUCT.size
 
 # Optimized segment payload size - balance between fewer chunks and staying under payload cap.
-# With a 16-byte header and a 237-byte payload cap, a 100-byte payload segment produces
-# 116-byte chunks, which stay comfortably under the cap.
+# LoRa frames max out at 256 bytes; Meshtastic adds a 16-byte LoRa header outside the
+# payload. Our 16-byte chunk header is inside the payload, so keep chunks well under
+# the ~240-byte usable payload limit for safety.
 SEGMENT_SIZE = 100
 # Use mid-range Zstandard compression level to balance CPU cost and compression ratio
 _COMPRESSOR = zstd.ZstdCompressor(level=4)
@@ -42,6 +43,8 @@ ENVELOPE_ALIAS_MAP: Dict[str, str] = {
     "id": "i",
     "type": "t",
     "correlation_id": "cid",
+    "priority": "p",
+    "meta": "m",
 }
 REVERSE_ENVELOPE_MAP: Dict[str, str] = {v: k for k, v in ENVELOPE_ALIAS_MAP.items()}
 

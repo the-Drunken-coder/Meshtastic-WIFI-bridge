@@ -39,6 +39,7 @@ _ensure_imports()
 
 from client import MeshtasticClient
 from logging_utils import configure_logging
+from metrics import get_metrics_registry
 
 from setup_utils import build_transport, close_transport, start_gateway
 from config_utils import (
@@ -71,6 +72,7 @@ class TestResult:
     duration_seconds: float
     request_bytes: int
     response_bytes: int
+    chunks_sent: int
     throughput_kbps: float
     error: Optional[str] = None
     response_data: Optional[Dict[str, Any]] = None
@@ -304,6 +306,7 @@ def run_scenario(
     client = MeshtasticClient(client_transport, gateway_node_id=gateway_node_id)
 
     try:
+        chunks_before = _get_outbound_chunk_total()
         status, duration, req_bytes, resp_bytes, error, resp_data = run_single_test(
             client,
             command,
@@ -311,6 +314,8 @@ def run_scenario(
             timeout=float(config["timeout"]),
             retries=int(config["retries"]),
         )
+        chunks_after = _get_outbound_chunk_total()
+        chunks_sent = max(0, chunks_after - chunks_before)
 
         # Wait for radio to settle before next test
         quiet_window = float(config.get("post_response_quiet", 10.0))
@@ -336,6 +341,7 @@ def run_scenario(
         duration_seconds=duration,
         request_bytes=req_bytes,
         response_bytes=resp_bytes,
+        chunks_sent=chunks_sent,
         throughput_kbps=throughput,
         error=error,
         response_data=resp_data,
@@ -361,6 +367,7 @@ def format_results(results: List[TestResult]) -> str:
         lines.append(f"Request size:   {_format_bytes(result.request_bytes)}")
         lines.append(f"Response size:  {_format_bytes(result.response_bytes)}")
         lines.append(f"Total payload:  {_format_bytes(result.request_bytes + result.response_bytes)}")
+        lines.append(f"Chunks sent:    {result.chunks_sent}")
         lines.append(f"Throughput:     {result.throughput_kbps:.2f} kbps")
         
         if result.overrides:
@@ -423,6 +430,20 @@ def _format_bytes(size: int) -> str:
     if size < 1024:
         return f"{size} B"
     return f"{size / 1024:.1f} KB"
+
+
+def _get_outbound_chunk_total() -> int:
+    snapshot = get_metrics_registry().snapshot()
+    counters = snapshot.get("counters", {}).get("transport_chunks_total", {})
+    total = 0.0
+    for labels_json, value in counters.items():
+        try:
+            labels = json.loads(labels_json)
+        except json.JSONDecodeError:
+            continue
+        if labels.get("direction") == "outbound":
+            total += float(value)
+    return int(total)
 
 
 def display_menu(scenarios: List[TestScenario], commands: List[str]) -> tuple[str, List[int]]:
@@ -559,7 +580,19 @@ def main() -> None:
     # Run selected scenarios
     results: List[TestResult] = []
     selected_scenarios = [scenarios[i] for i in selected_indices]
-    
+
+    # Create results directory and path up front for incremental updates
+    results_dir = runner_dir / "results"
+    results_dir.mkdir(exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    results_filename = f"test_results_{timestamp}.txt"
+    results_path = results_dir / results_filename
+
+    def write_results_snapshot() -> None:
+        report_text = format_results(results)
+        with open(results_path, "w", encoding="utf-8") as f:
+            f.write(report_text)
+
     for i, scenario in enumerate(selected_scenarios, 1):
         if stop_event.is_set():
             print("\nTest run interrupted.")
@@ -578,6 +611,7 @@ def main() -> None:
             results.append(result)
             
             print(f"Result: {result.status.upper()} - {result.duration_seconds:.2f}s - {result.throughput_kbps:.2f} kbps")
+            write_results_snapshot()
             
         except Exception as exc:
             logging.error("Scenario %s failed with exception: %s", scenario.name, exc)
@@ -591,24 +625,16 @@ def main() -> None:
                 duration_seconds=0.0,
                 request_bytes=0,
                 response_bytes=0,
+                chunks_sent=0,
                 throughput_kbps=0.0,
                 error=str(exc),
             ))
+            write_results_snapshot()
     
     # Generate and save results
     if results:
         report = format_results(results)
         print("\n" + report)
-        
-        # Create results directory if needed
-        results_dir = runner_dir / "results"
-        results_dir.mkdir(exist_ok=True)
-        
-        # Save to file
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        results_filename = f"test_results_{timestamp}.txt"
-        results_path = results_dir / results_filename
-        
         with open(results_path, "w", encoding="utf-8") as f:
             f.write(report)
         

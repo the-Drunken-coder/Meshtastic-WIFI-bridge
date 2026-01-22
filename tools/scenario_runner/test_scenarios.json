@@ -7,41 +7,101 @@
   },
   "scenarios": [
     {
-      "name": "short_turbo_default",
-      "description": "SHORT_TURBO preset with default segment size",
+      "name": "segment_size_200",
+      "description": "Segment size 200 bytes",
       "overrides": {
-        "modem_preset": "SHORT_TURBO"
-      }
-    },
-    {
-      "name": "long_fast_small_segments",
-      "description": "LONG_FAST preset with 100 byte segments",
-      "overrides": {
-        "modem_preset": "LONG_FAST",
-        "transport": {
-          "segment_size": 100
-        }
-      }
-    },
-    {
-      "name": "medium_slow_large_segments",
-      "description": "MEDIUM_SLOW preset with 200 byte segments",
-      "overrides": {
-        "modem_preset": "MEDIUM_SLOW",
         "transport": {
           "segment_size": 200
         }
       }
     },
     {
-      "name": "short_fast_aggressive",
-      "description": "SHORT_FAST with aggressive nack settings",
+      "name": "segment_size_201",
+      "description": "Segment size 201 bytes",
       "overrides": {
-        "modem_preset": "SHORT_FAST",
         "transport": {
-          "segment_size": 150,
-          "nack_max_per_seq": 5,
-          "nack_interval": 0.5
+          "segment_size": 201
+        }
+      }
+    },
+    {
+      "name": "segment_size_202",
+      "description": "Segment size 202 bytes",
+      "overrides": {
+        "transport": {
+          "segment_size": 202
+        }
+      }
+    },
+    {
+      "name": "segment_size_203",
+      "description": "Segment size 203 bytes",
+      "overrides": {
+        "transport": {
+          "segment_size": 203
+        }
+      }
+    },
+    {
+      "name": "segment_size_204",
+      "description": "Segment size 204 bytes",
+      "overrides": {
+        "transport": {
+          "segment_size": 204
+        }
+      }
+    },
+    {
+      "name": "segment_size_205",
+      "description": "Segment size 205 bytes",
+      "overrides": {
+        "transport": {
+          "segment_size": 205
+        }
+      }
+    },
+    {
+      "name": "segment_size_206",
+      "description": "Segment size 206 bytes",
+      "overrides": {
+        "transport": {
+          "segment_size": 206
+        }
+      }
+    },
+    {
+      "name": "segment_size_207",
+      "description": "Segment size 207 bytes",
+      "overrides": {
+        "transport": {
+          "segment_size": 207
+        }
+      }
+    },
+    {
+      "name": "segment_size_208",
+      "description": "Segment size 208 bytes",
+      "overrides": {
+        "transport": {
+          "segment_size": 208
+        }
+      }
+    },
+    {
+      "name": "segment_size_209",
+      "description": "Segment size 209 bytes",
+      "overrides": {
+        "transport": {
+          "segment_size": 209
+        }
+      }
+    },
+    {
+      "name": "segment_size_210",
+      "description": "Segment size 210 bytes",
+      "overrides": {
+        "transport": {
+          "segment_size": 210
         }
       }
     }
