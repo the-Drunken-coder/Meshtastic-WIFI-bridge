@@ -6,6 +6,7 @@ import threading
 import time
 from typing import TYPE_CHECKING, Any
 
+from message import parse_chunk
 from transport import InMemoryRadio, RadioInterface
 
 if TYPE_CHECKING:
@@ -15,15 +16,22 @@ LOGGER = logging.getLogger(__name__)
 
 
 class SerialRadioAdapter:
-    def __init__(self, interface: "serial_interface.SerialInterface") -> None:  # type: ignore[name-defined]
+    def __init__(
+        self,
+        interface: "serial_interface.SerialInterface",
+        *,
+        disable_dedupe: bool = False,
+    ) -> None:  # type: ignore[name-defined]
         self._interface = interface
         self._message_queue: queue.Queue[tuple[str, bytes]] = queue.Queue()
         self._subscribed = False
         self._numeric_to_user_id: dict[str, str] = {}  # Cache for numeric ID -> user ID mapping
-        self._recent_messages: set[tuple[str, int]] = (
-            set()
-        )  # Deduplicate recent messages (sender, payload hash)
+        self._recent_messages: dict[
+            tuple[str, str, int, int, int] | tuple[str, int], float
+        ] = {}  # Deduplicate recent messages (sender, chunk header or payload hash)
+        self._dedupe_ttl_seconds = 8.0
         self._message_lock = threading.Lock()  # Thread-safe access to recent_messages
+        self._disable_dedupe = disable_dedupe
 
         # Check and log radio configuration
         self._check_radio_config()
@@ -83,6 +91,11 @@ class SerialRadioAdapter:
             # Both radios subscribe to pubsub, so both callbacks fire for every message
             # We must filter to only process messages from this radio's interface
             if interface is not self._interface:
+                if LOGGER.isEnabledFor(logging.DEBUG):
+                    LOGGER.debug(
+                        "[RADIO] Ignoring packet from non-matching interface: %s",
+                        interface,
+                    )
                 return
 
             decoded = packet.get("decoded")
@@ -169,22 +182,47 @@ class SerialRadioAdapter:
             if not isinstance(payload_bytes, bytes):
                 payload_bytes = str(payload_bytes).encode("utf-8")
 
-            # Deduplicate messages: create a hash of the payload to detect duplicates
-            # Use full payload hash to avoid deduplicating different chunks with same prefix
-            # (chunks share the same message ID but have different seq numbers)
-            # Using Python's built-in hash for non-cryptographic deduplication
-            payload_hash = hash(payload_bytes)
-            message_key = (source_str, payload_hash)
+            # Deduplicate messages using chunk header when possible (id + seq + total + flags).
+            # Fall back to payload hash if parsing fails.
+            try:
+                flags, short_id, seq, total, _ = parse_chunk(payload_bytes)
+                message_key = (source_str, short_id, seq, total, flags)
+            except Exception:
+                # Using Python's built-in hash for non-cryptographic deduplication
+                payload_hash = hash(payload_bytes)
+                message_key = (source_str, payload_hash)
 
-            with self._message_lock:
-                if message_key in self._recent_messages:
-                    LOGGER.debug("[RADIO] Duplicate message from %s (ignored)", source_str)
-                    return
-                # Keep last 1000 message keys for deduplication (cleaned periodically)
-                if len(self._recent_messages) > 1000:
-                    # Clear half of old entries (simple cleanup)
-                    self._recent_messages = set(list(self._recent_messages)[500:])
-                self._recent_messages.add(message_key)
+            if self._disable_dedupe:
+                LOGGER.debug("[RADIO] Dedupe disabled; accepting message from %s", source_str)
+            else:
+                if LOGGER.isEnabledFor(logging.DEBUG):
+                    LOGGER.debug(
+                        "[RADIO] Dedupe key for %s: %s", source_str, message_key
+                    )
+                with self._message_lock:
+                    now = time.time()
+                    # Clear expired keys.
+                    expired = [
+                        key
+                        for key, ts in self._recent_messages.items()
+                        if now - ts >= self._dedupe_ttl_seconds
+                    ]
+                    for key in expired:
+                        self._recent_messages.pop(key, None)
+
+                    if message_key in self._recent_messages:
+                        LOGGER.info(
+                            "[RADIO] Duplicate message from %s (ignored, key=%s)",
+                            source_str,
+                            message_key,
+                        )
+                        return
+                    # Keep last 1000 message keys for deduplication (cleaned periodically)
+                    if len(self._recent_messages) > 1000:
+                        # Clear half of old entries (simple cleanup)
+                        keys = list(self._recent_messages.keys())[500:]
+                        self._recent_messages = {key: self._recent_messages[key] for key in keys}
+                    self._recent_messages[message_key] = now
 
             payload_preview = payload_bytes[:32].hex()
             LOGGER.info(
@@ -304,6 +342,11 @@ class SerialRadioAdapter:
         # If pubsub is available, use the queue
         if self._subscribed:
             try:
+                if LOGGER.isEnabledFor(logging.DEBUG):
+                    LOGGER.debug(
+                        "[RADIO] Queue size before receive: %d",
+                        self._message_queue.qsize(),
+                    )
                 sender, payload = self._message_queue.get(timeout=timeout)
                 LOGGER.debug(
                     "Retrieved message from queue: sender=%s (isdigit=%s)",
@@ -350,7 +393,13 @@ class SerialRadioAdapter:
             LOGGER.warning("[RADIO] Error closing interface: %s", e)
 
 
-def build_radio(simulate: bool, port: str | None, node_id: str | None) -> RadioInterface:
+def build_radio(
+    simulate: bool,
+    port: str | None,
+    node_id: str | None,
+    *,
+    disable_dedupe: bool = False,
+) -> RadioInterface:
     if simulate:
         return InMemoryRadio(node_id or "node-0")
     try:
@@ -363,4 +412,4 @@ def build_radio(simulate: bool, port: str | None, node_id: str | None) -> RadioI
         interface = serial_interface.SerialInterface()
     else:
         interface = serial_interface.SerialInterface(port)
-    return SerialRadioAdapter(interface)
+    return SerialRadioAdapter(interface, disable_dedupe=disable_dedupe)

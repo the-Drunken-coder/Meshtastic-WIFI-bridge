@@ -26,29 +26,23 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "mode": "general",
     "reliability_method": None,
     "modem_preset": None,
-    "timeout": 90.0,
-    "retries": 2,
+    "timeout": None,
+    "retries": None,
     "log_level": "INFO",
+    "log_file": None,
     "simulate": False,
+    "disable_dedupe": False,
+    "dedupe_lease_seconds": 8.0,
     "spool_dir": os.path.expanduser("~/.meshtastic_bridge_harness"),
-    "post_response_quiet": 10.0,
-    "post_response_timeout": 150.0,
+    "post_response_quiet": None,
+    "post_response_timeout": None,
     "loop": False,
     "clear_spool": False,
     "transport_overrides": {},
 }
 
-# Fixed transport settings; no external tuning file is used for now.
-BASE_TRANSPORT_DEFAULTS: Dict[str, Any] = {
-    "chunk_ttl_per_chunk": 25.0,
-    "chunk_ttl_max": 3600.0,
-    # No pacing by default; set thresholds explicitly if needed.
-    "chunk_delay_threshold": None,
-    "chunk_delay_seconds": 0.0,
-    # Moderate NACK behaviour for simplicity.
-    "nack_max_per_seq": 3,
-    "nack_interval": 1.0,
-}
+# Transport defaults come only from the selected mode profile.
+BASE_TRANSPORT_DEFAULTS: Dict[str, Any] = {}
 TRANSPORT_DEFAULTS: Dict[str, Any] = dict(BASE_TRANSPORT_DEFAULTS)
 
 
@@ -95,8 +89,8 @@ def load_config(path: str, mode_override: Optional[str] = None) -> Dict[str, Any
     config["spool_dir"] = os.path.expanduser(config.get("spool_dir", DEFAULT_CONFIG["spool_dir"]))
 
     # Reset transport defaults each load to avoid cross-run leakage.
-    global TRANSPORT_DEFAULTS
-    TRANSPORT_DEFAULTS = dict(BASE_TRANSPORT_DEFAULTS)
+    TRANSPORT_DEFAULTS.clear()
+    TRANSPORT_DEFAULTS.update(BASE_TRANSPORT_DEFAULTS)
 
     # Apply mode defaults (best-effort; user overrides win).
     raw_mode = config.get("mode")
@@ -110,8 +104,9 @@ def load_config(path: str, mode_override: Optional[str] = None) -> Dict[str, Any
         except Exception as exc:
             logging.warning("Failed to load mode '%s' (%s); using built-in defaults", mode_name, exc)
             profile = {}
+    config["_mode_path"] = None  # Not tracked when using load_mode_profile
 
-    # Config-level keys
+    # Config-level keys (mode is authoritative for these)
     for key in (
         "reliability_method",
         "modem_preset",
@@ -121,21 +116,12 @@ def load_config(path: str, mode_override: Optional[str] = None) -> Dict[str, Any
         "post_response_quiet",
     ):
         if key in profile:
-            # Let user-provided values win; otherwise apply mode defaults
-            if key not in user_keys or config.get(key) is None or key == "reliability_method":
-                config[key] = profile[key]
+            config[key] = profile[key]
 
     # Transport defaults
     transport_overrides = profile.get("transport", {}) if isinstance(profile, dict) else {}
     if isinstance(transport_overrides, dict):
-        for key, value in transport_overrides.items():
-            TRANSPORT_DEFAULTS[key] = value
-    # Config-specified transport overrides (per-run sweeps)
-    explicit_overrides = config.get("transport_overrides", {})
-    if isinstance(explicit_overrides, dict):
-        for key, value in explicit_overrides.items():
-            TRANSPORT_DEFAULTS[key] = value
-
+        TRANSPORT_DEFAULTS.update(transport_overrides)
     return config
 
 

@@ -99,6 +99,8 @@ class MeshtasticTransport:
         self,
         radio: RadioInterface,
         deduper: RequestDeduper | None = None,
+        disable_dedupe: bool = False,
+        dedupe_lease_seconds: float | None = None,
         segment_size: int = 200,  # Push toward upper envelope (header+payload ~216 bytes)
         chunk_ttl: float = 120,  # Base TTL for message reassembly
         chunk_ttl_per_chunk: float = 2.0,  # Additional TTL per chunk for large messages
@@ -123,7 +125,11 @@ class MeshtasticTransport:
             nack_max_per_seq=nack_max_per_seq,
             nack_interval=nack_interval,
         )
-        self.deduper = deduper or RequestDeduper()
+        if deduper is None:
+            lease = dedupe_lease_seconds if dedupe_lease_seconds is not None else 300.0
+            self.deduper = RequestDeduper(lease_seconds=lease)
+        else:
+            self.deduper = deduper
         self.segment_size = segment_size
         self._progress_ttl = max(chunk_ttl_max, chunk_ttl, 1.0)
         self._chunk_delay_threshold = chunk_delay_threshold
@@ -151,6 +157,7 @@ class MeshtasticTransport:
         else:
             self.reliability = reliability
         self._enable_spool = enable_spool
+        self._disable_dedupe = disable_dedupe
         
         # Internal state for non-blocking transport
         self._active_chunks: Dict[str, List[bytes]] = {}
@@ -565,6 +572,13 @@ class MeshtasticTransport:
         return build_dedupe_keys(sender, envelope)
 
     def should_process(self, sender: str, envelope: MessageEnvelope) -> bool:
+        if self._disable_dedupe:
+            logger.debug(
+                "[TRANSPORT] Dedupe disabled; processing request %s from %s",
+                envelope.id[:8],
+                sender,
+            )
+            return True
         keys = self.build_dedupe_keys(sender, envelope)
         lease_seconds = self._lease_for(envelope)
         key_list = [keys.message]
@@ -575,4 +589,20 @@ class MeshtasticTransport:
         elif keys.correlation is None:
             # no semantic, no correlation; nothing extra
             pass
-        return not self.deduper.check_keys(key_list, lease_seconds=lease_seconds)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "[TRANSPORT] Dedupe keys for %s from %s: %s (lease=%.1fs)",
+                envelope.id[:8],
+                sender,
+                key_list,
+                lease_seconds or 0.0,
+            )
+        allowed = not self.deduper.check_keys(key_list, lease_seconds=lease_seconds)
+        if not allowed:
+            logger.info(
+                "[TRANSPORT] Dedupe blocked request %s from %s (keys=%s)",
+                envelope.id[:8],
+                sender,
+                key_list,
+            )
+        return allowed

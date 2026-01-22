@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import logging
 import time
+import urllib.error
+import urllib.request
 from typing import Any, Callable, Dict, Set
 
 from message import MessageEnvelope
@@ -37,10 +41,63 @@ def _handle_payload_digest(_envelope: MessageEnvelope, data: Dict[str, Any]) -> 
     return {"received": len(raw), "sha256": digest}
 
 
+def _handle_http_request(_envelope: MessageEnvelope, data: Dict[str, Any]) -> Dict[str, Any]:
+    url = data.get("url")
+    if not url:
+        return {"error": "url is required"}
+
+    method = str(data.get("method", "GET")).upper()
+    headers = data.get("headers") or {}
+    if not isinstance(headers, dict):
+        headers = {}
+
+    timeout = float(data.get("timeout", 20.0))
+    body = None
+    if data.get("body_b64") is not None:
+        try:
+            body = base64.b64decode(str(data["body_b64"]))
+        except Exception as exc:
+            return {"error": f"invalid body_b64: {exc}"}
+    elif data.get("body") is not None:
+        body_value = data["body"]
+        if isinstance(body_value, (dict, list)):
+            body = json.dumps(body_value).encode("utf-8")
+            headers.setdefault("content-type", "application/json")
+        else:
+            body = str(body_value).encode("utf-8")
+
+    request = urllib.request.Request(url, data=body, headers=headers, method=method)
+    status = None
+    response_headers: Dict[str, str] = {}
+    content = b""
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            status = response.getcode()
+            response_headers = {k.lower(): v for k, v in response.headers.items()}
+            content = response.read()
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+        response_headers = {k.lower(): v for k, v in exc.headers.items()}
+        try:
+            content = exc.read()
+        except Exception:
+            content = b""
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    return {
+        "status": status,
+        "headers": response_headers,
+        "content_b64": base64.b64encode(content).decode("ascii"),
+        "content_length": len(content),
+    }
+
+
 DEFAULT_HANDLERS: Dict[str, Handler] = {
     "echo": _handle_echo,
     "health": _handle_health,
     "payload_digest": _handle_payload_digest,
+    "http_request": _handle_http_request,
 }
 
 

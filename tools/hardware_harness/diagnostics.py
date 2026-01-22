@@ -25,7 +25,11 @@ def render_diagnostics(diags: List[Dict[str, Any]]) -> None:
         print(f"Duration: {diag.get('duration_seconds', 0.0):.2f}s")
         print(f"Request size: {_format_bytes(diag.get('request_bytes', 0))}")
         print(f"Response size: {_format_bytes(diag.get('response_bytes', 0))}")
-        print(f"Total payload: {_format_bytes(diag.get('request_bytes', 0) + diag.get('response_bytes', 0))}")
+        total_payload = diag.get('request_bytes', 0) + diag.get('response_bytes', 0)
+        duration = diag.get("duration_seconds", 0.0) or 0.0
+        kbps = (total_payload * 8 / 1000 / duration) if duration > 0 else 0.0
+        print(f"Total payload: {_format_bytes(total_payload)}")
+        print(f"Throughput: {kbps:.2f} kbps")
         print(f"Timeout: {diag.get('timeout_seconds', 0.0):.1f}s, Retries: {diag.get('retries', 0)}")
         if diag.get("response_type"):
             print(f"Response type: {diag.get('response_type')}")
@@ -37,7 +41,10 @@ def render_diagnostics(diags: List[Dict[str, Any]]) -> None:
         print(f"Total duration: {total_time:.2f}s")
         print(f"Total request bytes: {_format_bytes(total_request)}")
         print(f"Total response bytes: {_format_bytes(total_response)}")
-        print(f"Total payload: {_format_bytes(total_request + total_response)}")
+        total_payload = total_request + total_response
+        aggregate_kbps = (total_payload * 8 / 1000 / total_time) if total_time > 0 else 0.0
+        print(f"Total payload: {_format_bytes(total_payload)}")
+        print(f"Throughput: {aggregate_kbps:.2f} kbps")
         if total_timeouts:
             print(f"Timeouts: {total_timeouts}")
 
