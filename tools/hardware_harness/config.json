@@ -6,7 +6,7 @@
   "mode": "general",
   "timeout": 30.0,
   "log_level": "INFO",
-  "log_file": "logs.text",
+  "log_file": "logs.txt",
   "simulate": false,
   "disable_dedupe": false,
   "dedupe_lease_seconds": 8.0,

@@ -16,6 +16,7 @@ if SRC.exists() and str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from transport import MeshtasticTransport
+from modes import load_mode_profile
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "gateway_port": None,
@@ -97,21 +98,13 @@ def load_config(path: str, mode_override: Optional[str] = None) -> Dict[str, Any
     apply_mode = mode_name not in {"", "none", "null", None}
 
     profile: Dict[str, Any] = {}
-    mode_path: Optional[Path] = None
     if apply_mode:
         try:
-            mode_path = ROOT / "modes" / f"{mode_name}.json"
-            with mode_path.open("r", encoding="utf-8") as handle:
-                loaded = json.load(handle)
-            if isinstance(loaded, dict):
-                profile = loaded
-            else:
-                raise ValueError("Mode file did not contain an object")
+            profile = load_mode_profile(str(mode_name))
         except Exception as exc:
             logging.warning("Failed to load mode '%s' (%s); using built-in defaults", mode_name, exc)
             profile = {}
-            mode_path = None
-    config["_mode_path"] = str(mode_path) if mode_path else None
+    config["_mode_path"] = None  # Not tracked when using load_mode_profile
 
     # Config-level keys (mode is authoritative for these)
     for key in (
