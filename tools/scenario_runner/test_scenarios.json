@@ -1,108 +1,69 @@
 {
   "description": "Test scenario configurations for the dual radio harness runner",
-  "default_command": "http_request",
+  "default_command": "payload_digest",
   "default_payload": {
-    "url": "https://example.com",
-    "method": "GET"
+    "size_kb": 8,
+    "payload_random": true
   },
   "scenarios": [
     {
-      "name": "segment_size_200",
-      "description": "Segment size 200 bytes",
-      "overrides": {
-        "transport": {
-          "segment_size": 200
-        }
-      }
-    },
-    {
-      "name": "segment_size_201",
-      "description": "Segment size 201 bytes",
-      "overrides": {
-        "transport": {
-          "segment_size": 201
-        }
-      }
-    },
-    {
-      "name": "segment_size_202",
-      "description": "Segment size 202 bytes",
+      "name": "payload_1kb",
+      "description": "Payload size 1 KB",
       "overrides": {
         "transport": {
           "segment_size": 202
         }
+      },
+      "payload_overrides": {
+        "size_kb": 1
       }
     },
     {
-      "name": "segment_size_203",
-      "description": "Segment size 203 bytes",
+      "name": "payload_4kb",
+      "description": "Payload size 4 KB",
       "overrides": {
         "transport": {
-          "segment_size": 203
+          "segment_size": 202
         }
+      },
+      "payload_overrides": {
+        "size_kb": 4
       }
     },
     {
-      "name": "segment_size_204",
-      "description": "Segment size 204 bytes",
+      "name": "payload_8kb",
+      "description": "Payload size 8 KB",
       "overrides": {
         "transport": {
-          "segment_size": 204
+          "segment_size": 202
         }
+      },
+      "payload_overrides": {
+        "size_kb": 8
       }
     },
     {
-      "name": "segment_size_205",
-      "description": "Segment size 205 bytes",
+      "name": "payload_16kb",
+      "description": "Payload size 16 KB",
       "overrides": {
         "transport": {
-          "segment_size": 205
+          "segment_size": 202
         }
+      },
+      "payload_overrides": {
+        "size_kb": 16
       }
     },
     {
-      "name": "segment_size_206",
-      "description": "Segment size 206 bytes",
+      "name": "payload_32kb",
+      "description": "Payload size 32 KB",
       "overrides": {
         "transport": {
-          "segment_size": 206
+          "segment_size": 202
         }
-      }
-    },
-    {
-      "name": "segment_size_207",
-      "description": "Segment size 207 bytes",
-      "overrides": {
-        "transport": {
-          "segment_size": 207
-        }
-      }
-    },
-    {
-      "name": "segment_size_208",
-      "description": "Segment size 208 bytes",
-      "overrides": {
-        "transport": {
-          "segment_size": 208
-        }
-      }
-    },
-    {
-      "name": "segment_size_209",
-      "description": "Segment size 209 bytes",
-      "overrides": {
-        "transport": {
-          "segment_size": 209
-        }
-      }
-    },
-    {
-      "name": "segment_size_210",
-      "description": "Segment size 210 bytes",
-      "overrides": {
-        "transport": {
-          "segment_size": 210
-        }
+      },
+      "payload_overrides": {
+        "size_kb": 32
       }
     }
   ]

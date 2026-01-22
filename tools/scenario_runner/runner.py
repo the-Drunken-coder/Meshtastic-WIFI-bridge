@@ -8,8 +8,10 @@ Usage:
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
+import os
 import signal
 import sys
 import threading
@@ -39,7 +41,6 @@ _ensure_imports()
 
 from client import MeshtasticClient
 from logging_utils import configure_logging
-from metrics import get_metrics_registry
 
 from setup_utils import build_transport, close_transport, start_gateway
 from config_utils import (
@@ -85,6 +86,7 @@ class TestScenario:
     name: str
     description: str
     overrides: Dict[str, Any]
+    payload_overrides: Dict[str, Any]
 
 
 def load_test_scenarios(path: str) -> tuple[List[TestScenario], str, Dict[str, Any]]:
@@ -98,6 +100,7 @@ def load_test_scenarios(path: str) -> tuple[List[TestScenario], str, Dict[str, A
             name=s["name"],
             description=s.get("description", ""),
             overrides=s.get("overrides", {}),
+            payload_overrides=s.get("payload_overrides", {}),
         ))
     
     default_command = data.get("default_command", "http_request")
@@ -174,7 +177,7 @@ def run_single_test(
     payload: Dict[str, Any],
     timeout: float,
     retries: int,
-) -> tuple[str, float, int, int, Optional[str], Optional[Dict[str, Any]]]:
+) -> tuple[str, float, int, int, Optional[str], Optional[Dict[str, Any]], Optional[str]]:
     """
     Run a single test command and return results.
     Returns: (status, duration, request_bytes, response_bytes, error, response_data)
@@ -185,6 +188,7 @@ def run_single_test(
     error = None
     status = "error"
     response_data = None
+    response_id = None
 
     try:
         if command == "http_request":
@@ -217,6 +221,7 @@ def run_single_test(
 
         if response is not None:
             response_data = response.to_dict()
+            response_id = response_data.get("id")
             response_bytes = len(json.dumps(response_data, separators=(",", ":")).encode("utf-8"))
             ack_spool_entry(client.transport, response.id)
             status = "success" if response.type == "response" else "error"
@@ -229,7 +234,7 @@ def run_single_test(
         error = f"{exc.__class__.__name__}: {exc}"
 
     duration = time.time() - run_start
-    return status, duration, request_bytes, response_bytes, error, response_data
+    return status, duration, request_bytes, response_bytes, error, response_data, response_id
 
 
 def run_scenario(
@@ -306,16 +311,18 @@ def run_scenario(
     client = MeshtasticClient(client_transport, gateway_node_id=gateway_node_id)
 
     try:
-        chunks_before = _get_outbound_chunk_total()
-        status, duration, req_bytes, resp_bytes, error, resp_data = run_single_test(
+        status, duration, req_bytes, resp_bytes, error, resp_data, response_id = run_single_test(
             client,
             command,
             payload,
             timeout=float(config["timeout"]),
             retries=int(config["retries"]),
         )
-        chunks_after = _get_outbound_chunk_total()
-        chunks_sent = max(0, chunks_after - chunks_before)
+        chunks_sent = _get_chunks_sent_for_message(
+            response_id,
+            client_transport,
+            gateway_transport,
+        )
 
         # Wait for radio to settle before next test
         quiet_window = float(config.get("post_response_quiet", 10.0))
@@ -432,18 +439,16 @@ def _format_bytes(size: int) -> str:
     return f"{size / 1024:.1f} KB"
 
 
-def _get_outbound_chunk_total() -> int:
-    snapshot = get_metrics_registry().snapshot()
-    counters = snapshot.get("counters", {}).get("transport_chunks_total", {})
-    total = 0.0
-    for labels_json, value in counters.items():
-        try:
-            labels = json.loads(labels_json)
-        except json.JSONDecodeError:
-            continue
-        if labels.get("direction") == "outbound":
-            total += float(value)
-    return int(total)
+def _get_chunks_sent_for_message(
+    message_id: Optional[str],
+    client_transport: Any,
+    gateway_transport: Any,
+) -> int:
+    if not message_id:
+        return 0
+    client_count = client_transport.get_sent_chunk_count(message_id)
+    gateway_count = gateway_transport.get_sent_chunk_count(message_id)
+    return client_count + gateway_count
 
 
 def display_menu(scenarios: List[TestScenario], commands: List[str]) -> tuple[str, List[int]]:
@@ -518,10 +523,29 @@ def prompt_payload_for_command(command: str, default_payload: Dict[str, Any]) ->
         return {}
     
     elif command == "payload_digest":
-        size_kb = input("  Size in KB [10]: ").strip()
-        return {"size_kb": int(size_kb) if size_kb else 10}
+        default_size = int(default_payload.get("size_kb", 10))
+        default_random = bool(default_payload.get("payload_random", False))
+        size_kb = input(f"  Size in KB [{default_size}]: ").strip()
+        return {
+            "size_kb": int(size_kb) if size_kb else default_size,
+            "payload_random": default_random,
+        }
     
     return default_payload
+
+
+def _prepare_payload(command: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    prepared = dict(payload)
+    if command == "payload_digest":
+        size_kb = prepared.pop("size_kb", None)
+        payload_random = bool(prepared.pop("payload_random", False))
+        if size_kb is not None:
+            size_bytes = max(0, int(size_kb) * 1024)
+            if payload_random:
+                prepared["content_b64"] = base64.b64encode(os.urandom(size_bytes)).decode("ascii")
+            else:
+                prepared["payload"] = "A" * size_bytes
+    return prepared
 
 
 def main() -> None:
@@ -599,13 +623,17 @@ def main() -> None:
             break
         
         print(f"\n[{i}/{len(selected_scenarios)}] Running: {scenario.name}")
+        scenario_payload = dict(payload)
+        if isinstance(scenario.payload_overrides, dict):
+            scenario_payload.update(scenario.payload_overrides)
+        scenario_payload = _prepare_payload(selected_command, scenario_payload)
         
         try:
             result = run_scenario(
                 scenario=scenario,
                 base_config=config,
                 command=selected_command,
-                payload=payload,
+                payload=scenario_payload,
                 stop_event=stop_event,
             )
             results.append(result)

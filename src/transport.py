@@ -151,6 +151,7 @@ class MeshtasticTransport:
         self._metrics = get_metrics_registry()
         # Track the last observed chunk/ack per message ID prefix (8 chars)
         self._last_progress: Dict[str, ChunkProgress] = {}
+        self._sent_chunk_counts: Dict[str, int] = {}
         if isinstance(reliability, str) or reliability is None:
             env_choice = os.getenv("MESHTASTIC_RELIABILITY_METHOD")
             self.reliability: ReliabilityStrategy = strategy_from_name(reliability or env_choice)
@@ -177,6 +178,17 @@ class MeshtasticTransport:
             depth,
             description="Number of pending messages in spool",
         )
+
+    def _message_prefix(self, message_id: str) -> str:
+        return message_id[:8]
+
+    def _inc_sent_chunks(self, message_id: str, amount: int = 1) -> None:
+        prefix = self._message_prefix(message_id)
+        self._sent_chunk_counts[prefix] = self._sent_chunk_counts.get(prefix, 0) + amount
+
+    def get_sent_chunk_count(self, message_id: str) -> int:
+        prefix = self._message_prefix(message_id)
+        return self._sent_chunk_counts.get(prefix, 0)
 
     def enqueue(self, envelope: MessageEnvelope, destination: str) -> None:
         """Enqueue a message for transmission (non-blocking)."""
@@ -299,6 +311,7 @@ class MeshtasticTransport:
         try:
             self.radio.send(destination, chunk)
             logger.debug("[TRANSPORT] Sent chunk %d/%d for %s", next_seq, len(chunks), msg_id)
+            self._inc_sent_chunks(msg_id)
             
             self._metrics.inc(
                 "transport_chunks_total",
@@ -374,6 +387,7 @@ class MeshtasticTransport:
             chunks = list(chunk_envelope(envelope, self.segment_size))
             for chunk in chunks:
                 self.radio.send(destination, chunk)
+                self._inc_sent_chunks(envelope.id)
                 self._metrics.inc(
                     "transport_chunks_total",
                     labels={"direction": "outbound", "command": envelope.command or "unknown"},
@@ -541,6 +555,7 @@ class MeshtasticTransport:
                 continue
             try:
                 self.radio.send(sender, chunk)
+                self._inc_sent_chunks(message_prefix)
                 self._metrics.inc(
                     "transport_chunks_total",
                     labels={"direction": "outbound", "command": "nack_resend"},
