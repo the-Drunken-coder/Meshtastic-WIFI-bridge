@@ -423,10 +423,10 @@ def main() -> None:
     try:
         diagnostics = interactive_loop(
             client,
-            timeout=float(config.get("timeout", 30.0)),
-            retries=int(config.get("retries", 2)),
-            quiet_window=float(config.get("post_response_quiet", 10.0)),
-            quiet_timeout=float(config.get("post_response_timeout", 90.0)),
+            timeout=float(config["timeout"]),
+            retries=int(config["retries"]),
+            quiet_window=float(config["post_response_quiet"]),
+            quiet_timeout=float(config["post_response_timeout"]),
             stop_event=stop_event,
             loop=bool(config.get("loop", False)),
             context=context,
