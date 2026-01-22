@@ -31,3 +31,6 @@ Thumbs.db
 
 # Logs
 logs.text
+
+# Test results
+tools/scenario_runner/results/

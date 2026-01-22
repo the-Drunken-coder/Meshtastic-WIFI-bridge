@@ -21,7 +21,8 @@ over Meshtastic links while preserving reliability and deduplication.
    - `data` carries the payload; `meta` may include a semantic dedupe key.
 
 2. **Binary chunk header**
-   Each on-air packet begins with a fixed 16-byte header:
+   Each PRIVATE_APP payload begins with a fixed 16-byte header (Meshtastic adds its
+   own LoRa header outside the payload):
    - Magic: `MB` (2 bytes)
    - Version: `1` (1 byte)
    - Flags: bitfield (1 byte, `0x01` = ACK, `0x02` = NACK)
@@ -31,6 +32,9 @@ over Meshtastic links while preserving reliability and deduplication.
 
 3. **Chunking**
    - Compressed envelopes are split into segments to stay under Meshtastic limits.
+   - LoRa frames max out at 256 bytes; Meshtastic prepends a 16-byte LoRa header
+     outside the payload, so the usable app payload is ~240 bytes. We keep chunks
+     below a conservative cap to avoid edge cases.
    - Receiver reassembles chunks by message ID prefix, dropping partial loads
      after a configurable TTL.
 

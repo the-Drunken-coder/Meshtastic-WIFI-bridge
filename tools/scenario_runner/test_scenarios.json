@@ -1,0 +1,75 @@
+{
+  "description": "Test scenario configurations for the dual radio harness runner",
+  "default_command": "payload_digest",
+  "default_payload": {
+    "size_kb": 8,
+    "payload_random": true
+  },
+  "scenarios": [
+    {
+      "name": "short_turbo_1kb",
+      "description": "SHORT_TURBO preset with 1 KB payload",
+      "overrides": {
+        "modem_preset": "SHORT_TURBO",
+        "transport": {
+          "segment_size": 100
+        }
+      },
+      "payload_overrides": {
+        "size_kb": 1
+      }
+    },
+    {
+      "name": "long_fast_4kb",
+      "description": "LONG_FAST preset with 4 KB payload",
+      "overrides": {
+        "modem_preset": "LONG_FAST",
+        "transport": {
+          "segment_size": 100
+        }
+      },
+      "payload_overrides": {
+        "size_kb": 4
+      }
+    },
+    {
+      "name": "medium_slow_8kb",
+      "description": "MEDIUM_SLOW preset with 8 KB payload",
+      "overrides": {
+        "modem_preset": "MEDIUM_SLOW",
+        "transport": {
+          "segment_size": 100
+        }
+      },
+      "payload_overrides": {
+        "size_kb": 8
+      }
+    },
+    {
+      "name": "short_fast_16kb",
+      "description": "SHORT_FAST preset with 16 KB payload",
+      "overrides": {
+        "modem_preset": "SHORT_FAST",
+        "transport": {
+          "segment_size": 100
+        }
+      },
+      "payload_overrides": {
+        "size_kb": 16
+      }
+    },
+    {
+      "name": "short_turbo_32kb",
+      "description": "SHORT_TURBO preset with 32 KB payload",
+      "overrides": {
+        "modem_preset": "SHORT_TURBO",
+        "transport": {
+          "segment_size": 100
+        }
+      },
+      "payload_overrides": {
+        "size_kb": 32
+      }
+    }
+  ]
+}
