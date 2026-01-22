@@ -337,9 +337,9 @@ def main() -> None:
         "Resolved mode=%s reliability=%s timeout=%.1fs post_response_timeout=%.1fs retries=%s modem_preset=%s",
         config.get("mode"),
         config.get("reliability_method"),
-        float(config.get("timeout", 0)),
-        float(config.get("post_response_timeout", 0)),
-        config.get("retries"),
+        float(config["timeout"]),
+        float(config["post_response_timeout"]),
+        config["retries"],
         config.get("modem_preset"),
     )
     spool_dir = config.get("spool_dir")
