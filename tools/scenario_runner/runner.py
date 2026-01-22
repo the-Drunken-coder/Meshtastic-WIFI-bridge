@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import signal
 import sys
 import threading
@@ -106,7 +105,14 @@ def load_test_scenarios(path: str) -> tuple[List[TestScenario], str, Dict[str, A
 
 
 def apply_overrides(base_config: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
-    """Apply scenario overrides to base config, returning a merged config."""
+    """
+    Apply scenario overrides to the base config and global transport defaults.
+
+    Non-transport keys are applied directly to a copy of base_config, and the
+    resulting dictionary is returned. If the "transport" key is present and is
+    a dict, its entries are merged into the global TRANSPORT_DEFAULTS and are
+    not added directly to the returned config.
+    """
     config = dict(base_config)
     
     for key, value in overrides.items():
@@ -191,12 +197,13 @@ def run_single_test(
                 **clean_payload,
             )
         elif hasattr(client, command):
-            typed = getattr(client, command)
-            if callable(typed):
+            method = getattr(client, command)
+            if callable(method):
+                # Try to pass timeout and max_retries; fall back if not supported
                 try:
-                    response = typed(**payload, timeout=timeout, max_retries=retries)
+                    response = method(**payload, timeout=timeout, max_retries=retries)
                 except TypeError:
-                    response = typed(**payload)
+                    response = method(**payload)
             else:
                 response = client.send_request(
                     command=command, data=payload, timeout=timeout, max_retries=retries
@@ -214,7 +221,7 @@ def run_single_test(
 
     except TimeoutError as exc:
         status = "timeout"
-        error = f"{exc.__class__.__name__}: {exc}"
+        error = str(exc)
     except Exception as exc:
         status = "error"
         error = f"{exc.__class__.__name__}: {exc}"
@@ -237,12 +244,9 @@ def run_scenario(
     print(f"Overrides: {json.dumps(scenario.overrides, indent=2)}")
     print(f"{'='*60}\n")
 
-    # Reset transport defaults before applying new overrides
-    TRANSPORT_DEFAULTS.clear()
-    
-    # Reload base config to get fresh mode defaults
+    # Reload base config to get fresh mode defaults (including transport settings)
     config = load_config(str(HARNESS_CONFIG_PATH))
-    
+
     # Apply scenario overrides
     config = apply_overrides(config, scenario.overrides)
     
@@ -250,10 +254,10 @@ def run_scenario(
     spool_dir = config.get("spool_dir")
 
     # Apply modem preset if specified
-    mode_preset = scenario.overrides.get("modem_preset") or config.get("modem_preset")
-    if mode_preset:
-        logging.info("Applying modem preset: %s", mode_preset)
-        _apply_modem_preset(mode_preset, gateway_port, client_port, bool(config.get("simulate")))
+    modem_preset = scenario.overrides.get("modem_preset") or config.get("modem_preset")
+    if modem_preset:
+        logging.info("Applying modem preset: %s", modem_preset)
+        _apply_modem_preset(modem_preset, gateway_port, client_port, bool(config.get("simulate")))
 
     # Build transports with scenario-specific settings
     gateway_transport = build_transport(
@@ -450,7 +454,7 @@ def display_menu(scenarios: List[TestScenario], commands: List[str]) -> tuple[st
                 selected_command = commands[idx]
                 break
         except ValueError:
-            pass
+            pass  # Invalid input, will prompt again
         print("Invalid selection. Please enter a valid number.")
     
     # Get scenario selection
@@ -468,7 +472,7 @@ def display_menu(scenarios: List[TestScenario], commands: List[str]) -> tuple[st
             if all(0 <= i < len(scenarios) for i in indices):
                 return selected_command, indices
         except ValueError:
-            pass
+            pass  # Invalid input, will prompt again
         
         print("Invalid selection. Please enter valid numbers separated by commas.")
 
