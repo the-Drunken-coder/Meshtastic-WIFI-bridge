@@ -26,8 +26,8 @@ HEADER_STRUCT = struct.Struct("!2sBB8sHH")
 HEADER_SIZE = HEADER_STRUCT.size
 
 # Optimized segment size - balance between fewer chunks and staying under payload cap.
-# With 16-byte header and 237-byte payload cap, this gives 221-byte segments.
-SEGMENT_SIZE = 221
+# With 16-byte header and 237-byte payload cap, this gives 100-byte segments.
+SEGMENT_SIZE = 100
 # Use mid-range Zstandard compression level to balance CPU cost and compression ratio
 _COMPRESSOR = zstd.ZstdCompressor(level=4)
 _DECOMPRESSOR = zstd.ZstdDecompressor()

@@ -5,7 +5,7 @@
   "client_node_id": "client",
   "mode": "general",
   "timeout": 30.0,
-  "log_level": "DEBUG",
+  "log_level": "INFO",
   "log_file": "logs.text",
   "simulate": false,
   "disable_dedupe": false,

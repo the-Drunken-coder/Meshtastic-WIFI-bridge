@@ -26,32 +26,39 @@ def build_transport(
     spool_dir: str,
     spool_name: str,
     *,
-    chunk_ttl_per_chunk: float,
-    chunk_ttl_max: float,
-    chunk_delay_threshold: int | None,
-    chunk_delay_seconds: float,
-    nack_max_per_seq: int,
-    nack_interval: float,
+    chunk_ttl_per_chunk: float | None = None,
+    chunk_ttl_max: float | None = None,
+    chunk_delay_threshold: int | None = None,
+    chunk_delay_seconds: float | None = None,
+    nack_max_per_seq: int | None = None,
+    nack_interval: float | None = None,
     disable_dedupe: bool = False,
     dedupe_lease_seconds: float | None = None,
-    segment_size: int = 200,
+    segment_size: int | None = None,
 ) -> MeshtasticTransport:
     os.makedirs(spool_dir, exist_ok=True)
     radio = build_radio(simulate, port, node_id, disable_dedupe=disable_dedupe)
     spool_path = os.path.join(spool_dir, f"{spool_name}_spool.json")
-    return MeshtasticTransport(
-        radio,
-        spool_path=spool_path,
-        disable_dedupe=disable_dedupe,
-        dedupe_lease_seconds=dedupe_lease_seconds,
-        segment_size=segment_size,
-        chunk_ttl_per_chunk=chunk_ttl_per_chunk,
-        chunk_ttl_max=chunk_ttl_max,
-        chunk_delay_threshold=chunk_delay_threshold,
-        chunk_delay_seconds=chunk_delay_seconds,
-        nack_max_per_seq=nack_max_per_seq,
-        nack_interval=nack_interval,
-    )
+    transport_kwargs: dict[str, object] = {
+        "spool_path": spool_path,
+        "disable_dedupe": disable_dedupe,
+        "dedupe_lease_seconds": dedupe_lease_seconds,
+    }
+    if segment_size is not None:
+        transport_kwargs["segment_size"] = segment_size
+    if chunk_ttl_per_chunk is not None:
+        transport_kwargs["chunk_ttl_per_chunk"] = chunk_ttl_per_chunk
+    if chunk_ttl_max is not None:
+        transport_kwargs["chunk_ttl_max"] = chunk_ttl_max
+    if chunk_delay_threshold is not None:
+        transport_kwargs["chunk_delay_threshold"] = chunk_delay_threshold
+    if chunk_delay_seconds is not None:
+        transport_kwargs["chunk_delay_seconds"] = chunk_delay_seconds
+    if nack_max_per_seq is not None:
+        transport_kwargs["nack_max_per_seq"] = nack_max_per_seq
+    if nack_interval is not None:
+        transport_kwargs["nack_interval"] = nack_interval
+    return MeshtasticTransport(radio, **transport_kwargs)
 
 
 def start_gateway(

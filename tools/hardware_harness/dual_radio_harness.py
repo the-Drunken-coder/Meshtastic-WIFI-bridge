@@ -329,6 +329,11 @@ def main() -> None:
         log_file=config.get("log_file"),
     )
     logging.info(
+        "Mode profile path=%s transport=%s",
+        config.get("_mode_path") or "unknown",
+        TRANSPORT_DEFAULTS,
+    )
+    logging.info(
         "Resolved mode=%s reliability=%s timeout=%.1fs post_response_timeout=%.1fs retries=%s modem_preset=%s",
         config.get("mode"),
         config.get("reliability_method"),
@@ -374,13 +379,13 @@ def main() -> None:
         "gateway",
         disable_dedupe=bool(config.get("disable_dedupe", False)),
         dedupe_lease_seconds=config.get("dedupe_lease_seconds"),
-        segment_size=int(TRANSPORT_DEFAULTS.get("segment_size", 200)),
-        chunk_ttl_per_chunk=float(TRANSPORT_DEFAULTS.get("chunk_ttl_per_chunk", 20.0)),
-        chunk_ttl_max=float(TRANSPORT_DEFAULTS.get("chunk_ttl_max", 1800.0)),
+        segment_size=TRANSPORT_DEFAULTS.get("segment_size"),
+        chunk_ttl_per_chunk=TRANSPORT_DEFAULTS.get("chunk_ttl_per_chunk"),
+        chunk_ttl_max=TRANSPORT_DEFAULTS.get("chunk_ttl_max"),
         chunk_delay_threshold=TRANSPORT_DEFAULTS.get("chunk_delay_threshold"),
-        chunk_delay_seconds=float(TRANSPORT_DEFAULTS.get("chunk_delay_seconds", 0.0)),
-        nack_max_per_seq=int(TRANSPORT_DEFAULTS.get("nack_max_per_seq", 5)),
-        nack_interval=float(TRANSPORT_DEFAULTS.get("nack_interval", 0.5)),
+        chunk_delay_seconds=TRANSPORT_DEFAULTS.get("chunk_delay_seconds"),
+        nack_max_per_seq=TRANSPORT_DEFAULTS.get("nack_max_per_seq"),
+        nack_interval=TRANSPORT_DEFAULTS.get("nack_interval"),
     )
     client_transport = build_transport(
         config.get("simulate", False),
@@ -390,13 +395,13 @@ def main() -> None:
         "client",
         disable_dedupe=bool(config.get("disable_dedupe", False)),
         dedupe_lease_seconds=config.get("dedupe_lease_seconds"),
-        segment_size=int(TRANSPORT_DEFAULTS.get("segment_size", 200)),
-        chunk_ttl_per_chunk=float(TRANSPORT_DEFAULTS.get("chunk_ttl_per_chunk", 20.0)),
-        chunk_ttl_max=float(TRANSPORT_DEFAULTS.get("chunk_ttl_max", 1800.0)),
+        segment_size=TRANSPORT_DEFAULTS.get("segment_size"),
+        chunk_ttl_per_chunk=TRANSPORT_DEFAULTS.get("chunk_ttl_per_chunk"),
+        chunk_ttl_max=TRANSPORT_DEFAULTS.get("chunk_ttl_max"),
         chunk_delay_threshold=TRANSPORT_DEFAULTS.get("chunk_delay_threshold"),
-        chunk_delay_seconds=float(TRANSPORT_DEFAULTS.get("chunk_delay_seconds", 0.0)),
-        nack_max_per_seq=int(TRANSPORT_DEFAULTS.get("nack_max_per_seq", 5)),
-        nack_interval=float(TRANSPORT_DEFAULTS.get("nack_interval", 0.5)),
+        chunk_delay_seconds=TRANSPORT_DEFAULTS.get("chunk_delay_seconds"),
+        nack_max_per_seq=TRANSPORT_DEFAULTS.get("nack_max_per_seq"),
+        nack_interval=TRANSPORT_DEFAULTS.get("nack_interval"),
     )
     if config.get("clear_spool"):
         clear_spool(gateway_transport)
