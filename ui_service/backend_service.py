@@ -20,7 +20,7 @@ if SRC.exists() and str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from client import MeshtasticClient
-from dedupe import DedupeKeys
+from dedupe import DedupeKeys, RequestDeduper
 from gateway import MeshtasticGateway
 from message import MessageEnvelope
 from radio import build_radio
@@ -58,7 +58,7 @@ class TransportWrapper:
         return self._transport.build_dedupe_keys(sender, envelope)
     
     @property
-    def deduper(self):
+    def deduper(self) -> RequestDeduper:
         """Access to deduper."""
         return self._transport.deduper
     
