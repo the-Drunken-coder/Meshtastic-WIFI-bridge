@@ -5,10 +5,10 @@ const { spawnSync } = require("node:child_process");
 const path = require("node:path");
 const fs = require("node:fs");
 
-const scriptPath = path.resolve(__dirname, "..", "scripts", "ui.py");
+const scriptPath = path.resolve(__dirname, "..", "ui_service", "ui.py");
 
 if (!fs.existsSync(scriptPath)) {
-  console.error("meshtastic-bridge: Missing scripts/ui.py in package.");
+  console.error("meshtastic-bridge: Missing ui_service/ui.py in package.");
   process.exit(1);
 }
 
