@@ -18,6 +18,9 @@ jobs:
           script: |
             const perPage = 100;
             let page = 1;
+            const thirtyDaysAgo = new Date();
+            thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+            
             while (true) {
               const { data } = await github.rest.actions.listWorkflowRunsForRepo({
                 owner: context.repo.owner,
@@ -29,11 +32,17 @@ jobs:
                 break;
               }
               for (const run of data.workflow_runs) {
-                await github.rest.actions.deleteWorkflowRun({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  run_id: run.id,
-                });
+                const runDate = new Date(run.created_at);
+                const isOld = runDate < thirtyDaysAgo;
+                const isCompleted = run.status === 'completed';
+                
+                if (isOld && isCompleted) {
+                  await github.rest.actions.deleteWorkflowRun({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    run_id: run.id,
+                  });
+                }
               }
               page += 1;
             }

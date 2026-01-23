@@ -20,9 +20,17 @@ This project ships a small Node wrapper so you can run the Python CLI via an
 `npm`-installed command.
 
 ```bash
+# Install from npm registry (recommended)
+npm install -g meshtastic-bridge
+
+# Or, from a cloned checkout of this repository:
 npm install -g .
+
+# Ensure Python dependencies are installed:
 pip install -r requirements.txt
-meshbridge
+
+# Run the CLI:
+meshtastic-bridge
 ```
 
 Set `MESHTASTIC_BRIDGE_PYTHON` if you need to point at a specific Python executable.

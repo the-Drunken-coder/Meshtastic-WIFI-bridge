@@ -5,7 +5,7 @@
   "license": "MIT",
   "type": "commonjs",
   "bin": {
-    "meshbridge": "bin/meshtastic-bridge.js"
+    "meshtastic-bridge": "bin/meshtastic-bridge.js"
   },
   "files": [
     "bin",
@@ -14,7 +14,8 @@
     "modes",
     "README.md",
     "LICENSE",
-    "docs"
+    "docs",
+    "requirements.txt"
   ],
   "engines": {
     "node": ">=18"

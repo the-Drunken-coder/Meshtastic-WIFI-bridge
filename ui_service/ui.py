@@ -176,8 +176,8 @@ class KeyReader:
 
         fd = sys.stdin.fileno()
         old_settings = termios.tcgetattr(fd)
+        tty.setraw(fd)
         try:
-            tty.setraw(fd)
             while not self._stop_event.is_set():
                 readable, _, _ = select.select([sys.stdin], [], [], 0.1)
                 if not readable:
