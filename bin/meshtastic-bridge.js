@@ -51,6 +51,14 @@ function resolvePython() {
   return null;
 }
 
+const args = process.argv.slice(2);
+if (args[0] === "update") {
+  const update = spawnSync("npm", ["install", "-g", "meshtastic-bridge"], {
+    stdio: "inherit",
+  });
+  process.exit(update.status ?? 1);
+}
+
 const python = resolvePython();
 if (!python) {
   console.error(
@@ -59,15 +67,13 @@ if (!python) {
   process.exit(1);
 }
 
-if (process.argv.slice(2).length > 0) {
+if (args.length > 0) {
   console.warn("meshbridge: CLI flags are not supported yet (WIP UI only).");
 }
 
-const result = spawnSync(
-  python.cmd,
-  [...python.args, scriptPath],
-  { stdio: "inherit" }
-);
+const result = spawnSync(python.cmd, [...python.args, scriptPath], {
+  stdio: "inherit",
+});
 
 if (result.error) {
   console.error(`meshbridge: ${result.error.message}`);
