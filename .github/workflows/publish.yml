@@ -23,7 +23,7 @@ jobs:
 
       - name: Resolve next version
         run: |
-          node -e "const fs=require('fs');const {execSync}=require('child_process');const current=require('./package.json').version||'0.0.0';let latest='0.0.0';try{latest=execSync('npm view meshtastic-bridge version',{stdio:['ignore','pipe','ignore']}).toString().trim()||'0.0.0';}catch(e){};const pick=(a,b)=>{const pa=a.split('.').map(n=>parseInt(n,10)||0);const pb=b.split('.').map(n=>parseInt(n,10)||0);for(let i=0;i<3;i++){if(pb[i]>pa[i])return b;if(pb[i]<pa[i])return a;}return a;};const base=pick(current,latest);const parts=base.split('.').map(n=>parseInt(n,10)||0);parts[2]+=1;const next=parts.join('.');fs.appendFileSync(process.env.GITHUB_ENV,`NEXT_VERSION=${next}\\n`);console.log(`Next version: ${next}`);"
+          node -e "const fs=require('fs');const {execSync}=require('child_process');const current=require('./package.json').version||'0.0.0';let latest='0.0.0';try{latest=execSync('npm view meshtastic-bridge version',{stdio:['ignore','pipe','ignore']}).toString().trim()||'0.0.0';}catch(e){};const pick=(a,b)=>{const pa=a.split('.').map(n=>parseInt(n,10)||0);const pb=b.split('.').map(n=>parseInt(n,10)||0);for(let i=0;i<3;i++){if(pb[i]>pa[i])return b;if(pb[i]<pa[i])return a;}return a;};const base=pick(current,latest);const parts=base.split('.').map(n=>parseInt(n,10)||0);parts[2]+=1;const next=parts.join('.');fs.appendFileSync(process.env.GITHUB_ENV,'NEXT_VERSION='+next+'\\n');console.log('Next version: '+next);"
 
       - name: Set version
         run: npm version "${{ env.NEXT_VERSION }}" --no-git-tag-version
