@@ -57,6 +57,8 @@ def _normalize_ports(ports: Iterable[object]) -> list[str]:
 
 
 def detect_radio_ports() -> Tuple[list[str], str | None]:
+    meshtastic_err = None
+    serial_err = None
     try:
         from meshtastic import util as meshtastic_util
 
@@ -177,41 +179,29 @@ class BackendService:
         radio = None
         try:
             ports, _ = detect_radio_ports()
-            port = ports[0] if ports else None
+            if not ports:
+                with self._lock:
+                    self._state.gateway_error = "no radio ports detected"
+                return
+            port = ports[0]
             radio = build_radio(False, port, "gateway")
             transport = MeshtasticTransport(radio)
             gateway = MeshtasticGateway(transport)
             local_id = _resolve_local_radio_id(radio)
             with self._lock:
                 self._state.local_radio_id = local_id
+            
+            # Hook into the transport receive to capture messages for UI display
+            original_receive = transport.receive_message
+            def monitored_receive(timeout=0.25):
+                sender, envelope = original_receive(timeout=timeout)
+                if envelope is not None and sender is not None:
+                    self._record_gateway_event(sender, envelope)
+                return sender, envelope
+            transport.receive_message = monitored_receive
+            
             while not self._gateway_stop_event.is_set():
-                sender, envelope = transport.receive_message(timeout=0.25)
-                if envelope is None or sender is None:
-                    continue
-                self._record_gateway_event(sender, envelope)
-                if envelope.type != "request":
-                    continue
-                if not transport.should_process(sender, envelope):
-                    continue
-                dedupe_keys = transport.build_dedupe_keys(sender, envelope)
-                in_progress_key = (
-                    dedupe_keys.semantic or dedupe_keys.correlation or dedupe_keys.message
-                )
-                lease_seconds = (envelope.meta or {}).get("lease_seconds")
-                lease_duration = lease_seconds or transport.deduper.lease_seconds
-                if not transport.deduper.acquire_lease(
-                    in_progress_key, lease_seconds=lease_duration
-                ):
-                    continue
-                try:
-                    response = gateway._handle_request(envelope)
-                    transport.send_message(response, sender)
-                finally:
-                    transport.deduper.release_lease(
-                        in_progress_key,
-                        lease_seconds=lease_duration,
-                        remember=True,
-                    )
+                gateway.run_once(timeout=0.25)
         except Exception as exc:
             with self._lock:
                 self._state.gateway_error = str(exc)
@@ -223,7 +213,12 @@ class BackendService:
         radio = None
         try:
             ports, _ = detect_radio_ports()
-            port = ports[0] if ports else None
+            if not ports:
+                with self._lock:
+                    self._state.client_status = "error"
+                    self._state.client_error = "no radio ports detected"
+                return
+            port = ports[0]
             radio = build_radio(False, port, "client")
             transport = MeshtasticTransport(radio)
             client = MeshtasticClient(transport, gateway_id)

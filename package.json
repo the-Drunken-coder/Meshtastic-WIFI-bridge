@@ -12,6 +12,7 @@
     "scripts",
     "src",
     "modes",
+    "ui_service",
     "README.md",
     "docs"
   ],
