@@ -89,7 +89,7 @@ def render_ui(console: Console) -> Layout:
         Align.center(content_text, vertical="middle"),
         border_style="cyan",
         padding=(1, 2),
-        title="[bold cyan]Meshtastic WiFi Bridge[/bold cyan]",
+        title=f"[bold cyan]Meshtastic {BRIDGE_SUBTITLE}[/bold cyan]",
         title_align="center"
     )
     
