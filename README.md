@@ -30,7 +30,7 @@ npm install -g .
 pip install -r requirements.txt
 
 # Run the CLI:
-meshtastic-bridge
+meshbridge
 ```
 
 Set `MESHTASTIC_BRIDGE_PYTHON` if you need to point at a specific Python executable.
