@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 import time
 from collections import deque
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -19,6 +20,7 @@ if SRC.exists() and str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from client import MeshtasticClient
+from dedupe import DedupeKeys
 from gateway import MeshtasticGateway
 from message import MessageEnvelope
 from radio import build_radio
@@ -51,7 +53,7 @@ class TransportWrapper:
         """Check if message should be processed."""
         return self._transport.should_process(sender, envelope)
     
-    def build_dedupe_keys(self, sender: str, envelope: MessageEnvelope):
+    def build_dedupe_keys(self, sender: str, envelope: MessageEnvelope) -> DedupeKeys:
         """Build deduplication keys."""
         return self._transport.build_dedupe_keys(sender, envelope)
     
@@ -83,7 +85,7 @@ class BackendState:
     client_error: str | None = None
 
 
-def _normalize_ports(ports: object) -> list[str]:
+def _normalize_ports(ports: Iterable[object]) -> list[str]:
     normalized: list[str] = []
     for port in ports:
         if isinstance(port, str):
