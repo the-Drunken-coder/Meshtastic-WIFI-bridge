@@ -4,9 +4,9 @@ import logging
 import random
 import time
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
-from message import MessageEnvelope
+from message import MessageEnvelope, chunk_envelope
 from metrics import DEFAULT_LATENCY_BUCKETS, get_metrics_registry
 from transport import MeshtasticTransport
 
@@ -33,7 +33,7 @@ class MeshtasticClient:
         timeout: Optional[float] = None,
         max_retries: Optional[int] = None,
     ) -> MessageEnvelope:
-        return self._send_typed("echo", {"message": message}, timeout, max_retries)
+        return self._send_typed("echo", {"message": message}, timeout, max_retries, None)
 
     def payload_digest(
         self,
@@ -48,7 +48,7 @@ class MeshtasticClient:
             data["content_b64"] = content_b64
         if payload is not None:
             data["payload"] = payload
-        return self._send_typed("payload_digest", data, timeout, max_retries)
+        return self._send_typed("payload_digest", data, timeout, max_retries, None)
 
     def http_request(
         self,
@@ -60,6 +60,7 @@ class MeshtasticClient:
         body_b64: str | None = None,
         timeout: Optional[float] = None,
         max_retries: Optional[int] = None,
+        progress_callback: Callable[[Dict[str, Any]], None] | None = None,
     ) -> MessageEnvelope:
         data: Dict[str, Any] = {"url": url}
         if method:
@@ -72,7 +73,7 @@ class MeshtasticClient:
             data["body_b64"] = body_b64
         if timeout is not None:
             data["timeout"] = timeout
-        return self._send_typed("http_request", data, timeout, max_retries)
+        return self._send_typed("http_request", data, timeout, max_retries, progress_callback)
 
     def _send_typed(
         self,
@@ -80,13 +81,14 @@ class MeshtasticClient:
         data: Dict[str, Any],
         timeout: Optional[float],
         max_retries: Optional[int],
+        progress_callback: Callable[[Dict[str, Any]], None] | None,
     ) -> MessageEnvelope:
         kwargs: Dict[str, Any] = {}
         if timeout is not None:
             kwargs["timeout"] = timeout
         if max_retries is not None:
             kwargs["max_retries"] = max_retries
-        return self.send_request(command=command, data=data, **kwargs)
+        return self.send_request(command=command, data=data, progress_callback=progress_callback, **kwargs)
 
     def send_request(
         self,
@@ -94,6 +96,7 @@ class MeshtasticClient:
         data: Dict[str, Any] | None = None,
         timeout: float = 30.0,
         max_retries: int = 2,
+        progress_callback: Callable[[Dict[str, Any]], None] | None = None,
     ) -> MessageEnvelope:
         request_start = time.time()
         envelope = MessageEnvelope(
@@ -104,6 +107,10 @@ class MeshtasticClient:
         )
 
         data_size = len(str(data or {}).encode("utf-8"))
+        try:
+            total_chunks = len(list(chunk_envelope(envelope, self.transport.segment_size)))
+        except Exception:
+            total_chunks = 0
         LOGGER.info(
             "[CLIENT] Sending request %s: command=%s, data_size=%d bytes, timeout=%.1fs, max_retries=%d",
             envelope.id[:8],
@@ -120,6 +127,18 @@ class MeshtasticClient:
             "client_requests_total",
             labels={"command": command, "status": "started"},
         )
+
+        if progress_callback:
+            progress_callback(
+                {
+                    "phase": "send",
+                    "message_id": envelope.id,
+                    "sent_chunks": 0,
+                    "total_chunks": total_chunks,
+                    "eta_seconds": None,
+                    "progress": 0.0,
+                }
+            )
 
         for attempt in range(max_retries + 1):
             if attempt > 0:
@@ -149,7 +168,27 @@ class MeshtasticClient:
                 self.transport.process_outbox()
 
             send_start = time.time()
-            self.transport.send_message(envelope, self.gateway_node_id)
+            sent_chunks = 0
+
+            def on_chunk_sent(seq: int, total: int) -> None:
+                nonlocal sent_chunks
+                sent_chunks = seq
+                if not progress_callback:
+                    return
+                elapsed = max(0.001, time.time() - send_start)
+                eta = (elapsed / max(seq, 1)) * max(total - seq, 0)
+                progress_callback(
+                    {
+                        "phase": "send",
+                        "message_id": envelope.id,
+                        "sent_chunks": seq,
+                        "total_chunks": total,
+                        "eta_seconds": eta,
+                        "progress": (seq / total) if total else 0.0,
+                    }
+                )
+
+            self.transport.send_message(envelope, self.gateway_node_id, on_chunk_sent=on_chunk_sent)
             send_time = time.time() - send_start
             self._metrics.observe(
                 "client_send_seconds",
@@ -241,6 +280,19 @@ class MeshtasticClient:
                         progress.is_ack,
                         last_progress - attempt_start,
                     )
+                    if progress_callback and progress.total:
+                        elapsed = max(0.001, last_progress - attempt_start)
+                        eta = (elapsed / max(progress.seq, 1)) * max(progress.total - progress.seq, 0)
+                        progress_callback(
+                            {
+                                "phase": "receive",
+                                "message_id": original_id,
+                                "received_chunks": progress.seq,
+                                "total_chunks": progress.total,
+                                "eta_seconds": eta,
+                                "progress": progress.seq / progress.total,
+                            }
+                        )
 
                 if response is None:
                     continue

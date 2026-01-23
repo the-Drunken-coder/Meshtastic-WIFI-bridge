@@ -8,6 +8,7 @@ import queue
 import sys
 import threading
 import time
+import textwrap
 from dataclasses import dataclass
 from rich.console import Console
 from rich.panel import Panel
@@ -122,8 +123,8 @@ def create_ui_layout() -> Layout:
     
     layout.split_column(
         Layout(name="top_spacer"),
-        Layout(name="header", size=9),
-        Layout(name="body", size=12),
+        Layout(name="header", size=8),
+        Layout(name="body", size=16),
         Layout(name="footer", size=4),
         Layout(name="bottom_spacer", size=1),
     )
@@ -138,6 +139,7 @@ class UIState:
     client_gateway_id: str = ""
     client_url: str = ""
     client_active_field: int = 0
+    client_scroll: int = 0
 
 
 MENU_OPTIONS = ["Open Client", "Start Gateway"]
@@ -209,7 +211,14 @@ def _read_key_windows() -> str | None:
     ch = msvcrt.getwch()
     if ch in ("\x00", "\xe0"):
         ch2 = msvcrt.getwch()
-        mapping = {"H": "up", "P": "down", "K": "left", "M": "right"}
+        mapping = {
+            "H": "up",
+            "P": "down",
+            "K": "left",
+            "M": "right",
+            "I": "pgup",
+            "Q": "pgdn",
+        }
         return mapping.get(ch2)
     if ch == "\r":
         return "enter"
@@ -226,8 +235,16 @@ def _read_key_posix() -> str | None:
     ch = sys.stdin.read(1)
     if ch == "\x1b":
         nxt = sys.stdin.read(2)
-        mapping = {"[A": "up", "[B": "down", "[C": "right", "[D": "left"}
-        return mapping.get(nxt, "esc")
+        if nxt in ("[A", "[B", "[C", "[D"):
+            mapping = {"[A": "up", "[B": "down", "[C": "right", "[D": "left"}
+            return mapping.get(nxt, "esc")
+        if nxt == "[5":
+            sys.stdin.read(1)
+            return "pgup"
+        if nxt == "[6":
+            sys.stdin.read(1)
+            return "pgdn"
+        return "esc"
     if ch in ("\r", "\n"):
         return "enter"
     if ch == "\x7f":
@@ -242,6 +259,7 @@ def _read_key_posix() -> str | None:
 def render_ui(console: Console, backend_state: BackendState, ui_state: UIState) -> Layout:
     """Render the beautiful UI."""
     layout = create_ui_layout()
+    content_width = max(20, console.size.width - 20)
     
     # Top spacer for vertical centering
     layout["top_spacer"].update("")
@@ -250,7 +268,7 @@ def render_ui(console: Console, backend_state: BackendState, ui_state: UIState) 
     logo_text = create_gradient_text(MESHTASTIC_LOGO, "#00ffff", "#0033ff")
     layout["header"].update(Align.center(logo_text, vertical="middle"))
     
-    content_text = _render_body(backend_state, ui_state)
+    content_text = _render_body(backend_state, ui_state, content_width)
     
     input_panel = Panel(
         Align.center(content_text, vertical="middle"),
@@ -272,11 +290,11 @@ def render_ui(console: Console, backend_state: BackendState, ui_state: UIState) 
     return layout
 
 
-def _render_body(backend_state: BackendState, ui_state: UIState) -> Text:
+def _render_body(backend_state: BackendState, ui_state: UIState, content_width: int) -> Text:
     if ui_state.view == "gateway":
         return _render_gateway_body(backend_state)
     if ui_state.view == "client":
-        return _render_client_body(backend_state, ui_state)
+        return _render_client_body(backend_state, ui_state, content_width)
     return _render_menu_body(backend_state, ui_state)
 
 
@@ -312,13 +330,32 @@ def _render_gateway_body(backend_state: BackendState) -> Text:
         text.append("Gateway Error: ", style="bold red")
         text.append(backend_state.gateway_error, style="red")
         text.append("\n\n")
+    text.append("Connected Radio: ", style="bold cyan")
+    if backend_state.radio_ports:
+        text.append(backend_state.radio_ports[0], style="green")
+    else:
+        text.append("none", style="dim")
+    text.append("\n", style="dim")
     text.append("Local Radio ID: ", style="bold cyan")
-    text.append(backend_state.local_radio_id or "unknown", style="green")
+    if backend_state.local_radio_id:
+        text.append(backend_state.local_radio_id, style="green")
+    elif backend_state.gateway_error:
+        text.append("Search failed", style="red")
+    else:
+        text.append("Searching...", style="dim")
     text.append("\nConnected Radios: ", style="bold cyan")
     if backend_state.connected_radios:
         text.append(", ".join(backend_state.connected_radios), style="green")
     else:
         text.append("none", style="dim")
+    text.append("\nLast Payload: ", style="bold cyan")
+    if backend_state.gateway_last_payload:
+        text.append(backend_state.gateway_last_payload, style="green")
+    else:
+        text.append("none", style="dim")
+    if backend_state.gateway_last_chunks_total:
+        text.append("\nChunks: ", style="bold cyan")
+        text.append(str(backend_state.gateway_last_chunks_total), style="green")
     text.append("\n\nTraffic:\n", style="bold cyan")
     if backend_state.gateway_traffic:
         for line in backend_state.gateway_traffic:
@@ -328,9 +365,19 @@ def _render_gateway_body(backend_state: BackendState) -> Text:
     return text
 
 
-def _render_client_body(backend_state: BackendState, ui_state: UIState) -> Text:
+def _render_client_body(
+    backend_state: BackendState,
+    ui_state: UIState,
+    content_width: int,
+) -> Text:
     text = Text()
     text.append("Client Mode\n\n", style="bold cyan")
+    text.append("Connected Radio: ", style="bold cyan")
+    if backend_state.radio_ports:
+        text.append(backend_state.radio_ports[0], style="green")
+    else:
+        text.append("none", style="dim")
+    text.append("\n\n", style="dim")
     fields = [
         ("Gateway ID", ui_state.client_gateway_id),
         ("URL", ui_state.client_url),
@@ -343,11 +390,58 @@ def _render_client_body(backend_state: BackendState, ui_state: UIState) -> Text:
         text.append(f"{prefix}{label}: {display}\n", style=style)
     text.append("\nStatus: ", style="bold cyan")
     text.append(backend_state.client_status or "idle", style="green")
+    text.append("\nSend: ", style="bold cyan")
+    text.append(_format_progress(
+        backend_state.client_send_chunks_sent,
+        backend_state.client_send_chunks_total,
+        backend_state.client_send_eta_seconds,
+    ), style="green")
+    text.append("\nReceive: ", style="bold cyan")
+    text.append(_format_progress(
+        backend_state.client_recv_chunks_received,
+        backend_state.client_recv_chunks_total,
+        backend_state.client_recv_eta_seconds,
+    ), style="green")
     if backend_state.client_response:
         text.append(f"\nResponse: {backend_state.client_response}", style="green")
     if backend_state.client_error:
         text.append(f"\nError: {backend_state.client_error}", style="red")
+    if backend_state.client_last_payload:
+        payload_lines = _wrap_payload(backend_state.client_last_payload, content_width - 8)
+        max_lines = 4
+        ui_state.client_scroll = _clamp_scroll(ui_state.client_scroll, len(payload_lines), max_lines)
+        start = ui_state.client_scroll
+        end = min(start + max_lines, len(payload_lines))
+        range_label = f"{start + 1}-{end} of {len(payload_lines)}"
+        text.append(f"\nPayload ({range_label}):", style="bold cyan")
+        for line in payload_lines[start:end]:
+            text.append(f"\n{line}", style="green")
     return text
+
+
+def _format_progress(sent: int, total: int, eta_seconds: float | None) -> str:
+    if total <= 0:
+        return "0% (0/0)"
+    percent = int((sent / total) * 100)
+    eta_text = ""
+    if eta_seconds is not None:
+        eta_text = f" ETA {eta_seconds:.1f}s"
+    return f"{percent}% ({sent}/{total}){eta_text}"
+
+
+def _wrap_payload(payload: str, width: int) -> list[str]:
+    width = max(10, width)
+    lines: list[str] = []
+    for line in payload.splitlines() or [""]:
+        lines.extend(textwrap.wrap(line, width=width) or [""])
+    return lines
+
+
+def _clamp_scroll(offset: int, total: int, window: int) -> int:
+    if total <= window:
+        return 0
+    max_offset = max(0, total - window)
+    return max(0, min(offset, max_offset))
 
 
 def _render_footer(ui_state: UIState) -> Text:
@@ -371,6 +465,9 @@ def _render_footer(ui_state: UIState) -> Text:
         text.append(", ", style="dim")
         text.append("Esc", style="bold white")
         text.append(" to menu", style="dim")
+        text.append(", ", style="dim")
+        text.append("PgUp/PgDn", style="bold white")
+        text.append(" to scroll", style="dim")
     text.append(" | ", style="dim")
     text.append(f"v{BRIDGE_VERSION}", style="dim")
     return text
@@ -410,6 +507,12 @@ def _handle_menu_key(key: str, ui_state: UIState, backend: BackendService) -> No
 def _handle_client_key(key: str, ui_state: UIState, backend: BackendService) -> None:
     if key in {"esc", "q"}:
         ui_state.view = "menu"
+        return
+    if key == "pgup":
+        ui_state.client_scroll = max(0, ui_state.client_scroll - 1)
+        return
+    if key == "pgdn":
+        ui_state.client_scroll += 1
         return
     if key in {"tab", "up", "down"}:
         ui_state.client_active_field = 1 - ui_state.client_active_field

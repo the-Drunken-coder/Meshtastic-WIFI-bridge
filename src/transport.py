@@ -5,7 +5,7 @@ import os
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Protocol, Tuple
+from typing import Callable, Dict, List, Optional, Protocol, Tuple
 
 from dedupe import RequestDeduper, build_dedupe_keys
 from message import (
@@ -372,7 +372,11 @@ class MeshtasticTransport:
         self._active_progress.pop(msg_id, None)
 
     def send_message(
-        self, envelope: MessageEnvelope, destination: str, chunk_delay: float = 0.0
+        self,
+        envelope: MessageEnvelope,
+        destination: str,
+        chunk_delay: float = 0.0,
+        on_chunk_sent: Callable[[int, int], None] | None = None,
     ) -> None:
         """Send a message immediately (blocking) or enqueue for async sending.
         
@@ -385,9 +389,12 @@ class MeshtasticTransport:
         else:
             # Direct send for backward compatibility when spool is disabled
             chunks = list(chunk_envelope(envelope, self.segment_size))
-            for chunk in chunks:
+            total_chunks = len(chunks)
+            for idx, chunk in enumerate(chunks, start=1):
                 self.radio.send(destination, chunk)
                 self._inc_sent_chunks(envelope.id)
+                if on_chunk_sent:
+                    on_chunk_sent(idx, total_chunks)
                 self._metrics.inc(
                     "transport_chunks_total",
                     labels={"direction": "outbound", "command": envelope.command or "unknown"},

@@ -9,6 +9,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
+import json
 
 import sys
 
@@ -33,7 +34,7 @@ class TransportWrapper:
     def __init__(
         self,
         transport: MeshtasticTransport,
-        on_message: Callable[[str, MessageEnvelope], None] | None = None,
+        on_message: Callable[[str, MessageEnvelope, dict[str, int] | None], None] | None = None,
     ) -> None:
         self._transport = transport
         self._on_message = on_message
@@ -42,7 +43,11 @@ class TransportWrapper:
         """Receive a message and notify observer if provided."""
         sender, envelope = self._transport.receive_message(timeout=timeout)
         if envelope is not None and sender is not None and self._on_message:
-            self._on_message(sender, envelope)
+            progress = self._transport.last_chunk_progress(envelope.id)
+            progress_info = None
+            if progress:
+                progress_info = {"seq": progress.seq, "total": progress.total}
+            self._on_message(sender, envelope, progress_info)
         return sender, envelope
     
     def send_message(self, envelope: MessageEnvelope, destination: str) -> None:
@@ -83,6 +88,15 @@ class BackendState:
     client_status: str = "idle"
     client_response: str | None = None
     client_error: str | None = None
+    client_send_chunks_sent: int = 0
+    client_send_chunks_total: int = 0
+    client_send_eta_seconds: float | None = None
+    client_recv_chunks_received: int = 0
+    client_recv_chunks_total: int = 0
+    client_recv_eta_seconds: float | None = None
+    client_last_payload: str | None = None
+    gateway_last_payload: str | None = None
+    gateway_last_chunks_total: int = 0
 
 
 def _normalize_ports(ports: Iterable[object]) -> list[str]:
@@ -102,21 +116,26 @@ def _normalize_ports(ports: Iterable[object]) -> list[str]:
 def detect_radio_ports() -> tuple[list[str], str | None]:
     meshtastic_err = None
     serial_err = None
+    ports: list[str] = []
     try:
         from meshtastic import util as meshtastic_util
 
-        ports = meshtastic_util.findPorts()
-        return _normalize_ports(ports), None
+        ports = _normalize_ports(meshtastic_util.findPorts())
     except Exception as exc:
         meshtastic_err = str(exc)
     try:
         from serial.tools import list_ports
 
-        ports = [port.device for port in list_ports.comports()]
-        return ports, None
+        serial_ports = [port.device for port in list_ports.comports()]
+        for port in serial_ports:
+            if port not in ports:
+                ports.append(port)
     except Exception as exc:
         serial_err = str(exc)
-    return [], f"{meshtastic_err}; {serial_err}"
+
+    if not ports:
+        return [], f"{meshtastic_err}; {serial_err}"
+    return ports, None
 
 
 class BackendService:
@@ -135,6 +154,11 @@ class BackendService:
         self._client_thread: threading.Thread | None = None
         self._gateway_log = deque(maxlen=30)
         self._connected_radios: set[str] = set()
+        self._radio: object | None = None
+        self._transport: MeshtasticTransport | None = None
+        self._radio_port: str | None = None
+        self._radio_error: str | None = None
+        self._last_connect_attempt = 0.0
 
     def start(self) -> None:
         self._thread.start()
@@ -145,6 +169,7 @@ class BackendService:
         self.stop_gateway()
         if self._client_thread and self._client_thread.is_alive():
             self._client_thread.join(timeout=2.0)
+        self._close_radio()
 
     def snapshot(self) -> BackendState:
         with self._lock:
@@ -162,15 +187,30 @@ class BackendService:
                 client_status=self._state.client_status,
                 client_response=self._state.client_response,
                 client_error=self._state.client_error,
+                client_send_chunks_sent=self._state.client_send_chunks_sent,
+                client_send_chunks_total=self._state.client_send_chunks_total,
+                client_send_eta_seconds=self._state.client_send_eta_seconds,
+                client_recv_chunks_received=self._state.client_recv_chunks_received,
+                client_recv_chunks_total=self._state.client_recv_chunks_total,
+                client_recv_eta_seconds=self._state.client_recv_eta_seconds,
+                client_last_payload=self._state.client_last_payload,
+                gateway_last_payload=self._state.gateway_last_payload,
+                gateway_last_chunks_total=self._state.gateway_last_chunks_total,
             )
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
             ports, error = detect_radio_ports()
+            self._ensure_radio_connection(ports, error)
             with self._lock:
-                self._state.radio_ports = ports
-                self._state.radio_detected = bool(ports)
-                self._state.last_error = error
+                if self._radio:
+                    self._state.radio_ports = [self._radio_port] if self._radio_port else []
+                    self._state.radio_detected = True
+                    self._state.last_error = None
+                else:
+                    self._state.radio_ports = []
+                    self._state.radio_detected = False
+                    self._state.last_error = self._radio_error or error
             self._stop_event.wait(self._poll_interval)
 
     def start_gateway(self) -> None:
@@ -208,6 +248,13 @@ class BackendService:
             self._state.client_status = "sending"
             self._state.client_response = None
             self._state.client_error = None
+            self._state.client_send_chunks_sent = 0
+            self._state.client_send_chunks_total = 0
+            self._state.client_send_eta_seconds = None
+            self._state.client_recv_chunks_received = 0
+            self._state.client_recv_chunks_total = 0
+            self._state.client_recv_eta_seconds = None
+            self._state.client_last_payload = None
         if self._client_thread and self._client_thread.is_alive():
             return
         self._client_thread = threading.Thread(
@@ -219,16 +266,12 @@ class BackendService:
         self._client_thread.start()
 
     def _run_gateway(self) -> None:
-        radio = None
         try:
-            ports, _ = detect_radio_ports()
-            if not ports:
+            transport = self._transport
+            if transport is None:
                 with self._lock:
-                    self._state.gateway_error = "no radio ports detected"
+                    self._state.gateway_error = self._radio_error or "no accessible radios"
                 return
-            port = ports[0]
-            radio = build_radio(False, port, "gateway")
-            transport = MeshtasticTransport(radio)
             
             # Wrap transport to observe messages
             wrapped_transport = TransportWrapper(
@@ -237,54 +280,105 @@ class BackendService:
             )
             gateway = MeshtasticGateway(wrapped_transport)
             
-            local_id = _resolve_local_radio_id(radio)
+            local_id = _resolve_local_radio_id(self._radio)
             with self._lock:
                 self._state.local_radio_id = local_id
+                if self._radio_port:
+                    self._state.radio_ports = [self._radio_port]
             
             while not self._gateway_stop_event.is_set():
                 gateway.run_once(timeout=0.25)
         except Exception as exc:
             with self._lock:
                 self._state.gateway_error = str(exc)
-        finally:
-            if radio and hasattr(radio, "close"):
-                radio.close()
 
     def _run_client_request(self, gateway_id: str, url: str) -> None:
-        radio = None
         try:
-            ports, _ = detect_radio_ports()
-            if not ports:
+            transport = self._transport
+            if transport is None:
                 with self._lock:
                     self._state.client_status = "error"
-                    self._state.client_error = "no radio ports detected"
+                    self._state.client_error = self._radio_error or "no accessible radios"
                 return
-            port = ports[0]
-            radio = build_radio(False, port, "client")
-            transport = MeshtasticTransport(radio)
             client = MeshtasticClient(transport, gateway_id)
-            response = client.http_request(url=url)
+            response = client.http_request(
+                url=url,
+                progress_callback=self._record_client_progress,
+            )
             summary = _summarize_response(response)
             with self._lock:
                 self._state.client_status = "done"
                 self._state.client_response = summary
+                self._state.client_last_payload = _format_payload(response.data)
         except Exception as exc:
             with self._lock:
                 self._state.client_status = "error"
                 self._state.client_error = str(exc)
-        finally:
-            if radio and hasattr(radio, "close"):
-                radio.close()
 
-    def _record_gateway_event(self, sender: str, envelope: MessageEnvelope) -> None:
+    def _record_gateway_event(
+        self,
+        sender: str,
+        envelope: MessageEnvelope,
+        progress: dict[str, int] | None,
+    ) -> None:
         timestamp = time.strftime("%H:%M:%S")
         command = envelope.command or envelope.type or "message"
         message = f"{timestamp} {sender} {command}"
+        if envelope.command == "http_request":
+            url = ""
+            if isinstance(envelope.data, dict):
+                url = str(envelope.data.get("url") or "")
+            if url:
+                message = f"{timestamp} {sender} {command} {url}"
         with self._lock:
             self._connected_radios.add(sender)
             self._gateway_log.appendleft(message)
             self._state.connected_radios = sorted(self._connected_radios)
             self._state.gateway_traffic = list(self._gateway_log)
+            self._state.gateway_last_payload = _format_payload(envelope.data)
+            if progress and progress.get("total"):
+                self._state.gateway_last_chunks_total = int(progress["total"])
+
+    def _record_client_progress(self, update: dict[str, object]) -> None:
+        phase = str(update.get("phase", ""))
+        with self._lock:
+            if phase == "send":
+                self._state.client_send_chunks_sent = int(update.get("sent_chunks", 0))
+                self._state.client_send_chunks_total = int(update.get("total_chunks", 0))
+                self._state.client_send_eta_seconds = _coerce_seconds(update.get("eta_seconds"))
+            elif phase == "receive":
+                self._state.client_recv_chunks_received = int(
+                    update.get("received_chunks", 0)
+                )
+                self._state.client_recv_chunks_total = int(update.get("total_chunks", 0))
+                self._state.client_recv_eta_seconds = _coerce_seconds(update.get("eta_seconds"))
+
+    def _ensure_radio_connection(self, ports: list[str], error: str | None) -> None:
+        if self._radio:
+            return
+        now = time.time()
+        if now - self._last_connect_attempt < 2.0:
+            return
+        self._last_connect_attempt = now
+        if not ports:
+            self._radio_error = error or "no radio ports detected"
+            return
+        try:
+            radio, used_port = _open_radio_from_ports(ports, "ui")
+            self._radio = radio
+            self._transport = MeshtasticTransport(radio)
+            self._radio_port = used_port
+            self._radio_error = None
+        except Exception as exc:
+            self._radio_error = str(exc)
+
+    def _close_radio(self) -> None:
+        radio = self._radio
+        self._radio = None
+        self._transport = None
+        self._radio_port = None
+        if radio and hasattr(radio, "close"):
+            radio.close()
 
 
 def _resolve_local_radio_id(radio: object) -> str | None:
@@ -298,6 +392,19 @@ def _resolve_local_radio_id(radio: object) -> str | None:
             if isinstance(user, dict) and user.get("id"):
                 return str(user.get("id"))
     return None
+
+
+def _open_radio_from_ports(
+    ports: list[str],
+    node_id: str,
+) -> tuple[object, str | None]:
+    errors: list[str] = []
+    for port in ports:
+        try:
+            return build_radio(False, port, node_id), port
+        except Exception as exc:
+            errors.append(f"{port}: {exc}")
+    raise RuntimeError("no available radios: " + "; ".join(errors))
 
 
 def _summarize_response(response: MessageEnvelope) -> str:
@@ -316,3 +423,24 @@ def _summarize_response(response: MessageEnvelope) -> str:
         if status is not None:
             return f"status={status}"
     return "response received"
+
+
+def _format_payload(payload: object, limit: int = 160) -> str | None:
+    if payload is None:
+        return None
+    try:
+        text = json.dumps(payload, ensure_ascii=True)
+    except Exception:
+        text = str(payload)
+    if len(text) > limit:
+        return text[: limit - 3] + "..."
+    return text
+
+
+def _coerce_seconds(value: object) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
