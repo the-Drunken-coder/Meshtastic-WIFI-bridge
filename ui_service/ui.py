@@ -82,7 +82,7 @@ def create_gradient_text(text: str, start_color: str, end_color: str) -> Text:
     
     # Count non-empty lines to spread the gradient across them
     non_empty_count = sum(1 for line in lines if line.strip())
-    if non_empty_count <= 0:
+    if non_empty_count == 0:
         return result
     
     current_index = 0
