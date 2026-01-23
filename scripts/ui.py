@@ -1,77 +1,132 @@
-"""Terminal UI entrypoint for Meshtastic bridge (WIP)."""
+"""Terminal UI entrypoint for Meshtastic bridge."""
 
 from __future__ import annotations
 
-import shutil
 import sys
 import time
+from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
+from rich.align import Align
+from rich.layout import Layout
+from rich.live import Live
+from rich.style import Style
 
 
-ESC = "\x1b"
+MESHTASTIC_LOGO = """
+███╗   ███╗███████╗███████╗██╗  ██╗████████╗ █████╗ ███████╗████████╗██╗ ██████╗
+████╗ ████║██╔════╝██╔════╝██║  ██║╚══██╔══╝██╔══██╗██╔════╝╚══██╔══╝██║██╔════╝
+██╔████╔██║█████╗  ███████╗███████║   ██║   ███████║███████╗   ██║   ██║██║     
+██║╚██╔╝██║██╔══╝  ╚════██║██╔══██║   ██║   ██╔══██║╚════██║   ██║   ██║██║     
+██║ ╚═╝ ██║███████╗███████║██║  ██║   ██║   ██║  ██║███████║   ██║   ██║╚██████╗
+╚═╝     ╚═╝╚══════╝╚══════╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚══════╝   ╚═╝   ╚═╝ ╚═════╝
+"""
+
+BRIDGE_SUBTITLE = "WiFi Bridge"
 
 
-def render_wip() -> None:
-    cols, rows = shutil.get_terminal_size(fallback=(100, 30))
-    cols = max(cols, 40)
-    rows = max(rows, 12)
+def create_gradient_text(text: str, start_color: str, end_color: str) -> Text:
+    """Create text with gradient color effect."""
+    result = Text()
+    lines = text.split('\n')
+    
+    # Define gradient colors from cyan to blue
+    colors = [
+        "#00ffff",  # Cyan
+        "#00d4ff",
+        "#00aaff",
+        "#0080ff",
+        "#0055ff",
+        "#0033ff",  # Blue
+    ]
+    
+    for i, line in enumerate(lines):
+        if line.strip():
+            color_idx = min(i, len(colors) - 1)
+            result.append(line + "\n", style=Style(color=colors[color_idx], bold=True))
+        else:
+            result.append("\n")
+    
+    return result
 
-    title = "MESHTASTIC BRIDGE"
-    subtitle = "WIP"
-    hint = "Press Ctrl+C to exit"
 
-    box_width = min(72, cols - 8)
-    box_width = max(box_width, 32)
-    box_height = 5
+def create_ui_layout() -> Layout:
+    """Create the main UI layout."""
+    layout = Layout()
+    
+    layout.split_column(
+        Layout(name="header", size=12),
+        Layout(name="body", size=7),
+        Layout(name="footer", size=3),
+    )
+    
+    return layout
 
-    def center(text: str, width: int) -> str:
-        pad_total = max(width - len(text), 0)
-        left = pad_total // 2
-        right = pad_total - left
-        return (" " * left) + text + (" " * right)
 
-    top = (rows // 2) - 6
-    box_top = (rows // 2) - (box_height // 2)
-    box_left = (cols - box_width) // 2
-
-    sys.stdout.write(ESC + "[?1049h")  # Alternate screen buffer
-    sys.stdout.write(ESC + "[2J")
-    sys.stdout.write(ESC + "[?25l")  # Hide cursor
-
-    # Title block
-    sys.stdout.write(f"{ESC}[{max(1, top)};1H")
-    sys.stdout.write(center(title, cols))
-    sys.stdout.write(f"{ESC}[{max(1, top + 2)};1H")
-    sys.stdout.write(center(subtitle, cols))
-
-    # Prompt-like box
-    sys.stdout.write(f"{ESC}[{box_top};{box_left}H")
-    sys.stdout.write("+" + ("-" * (box_width - 2)) + "+")
-    sys.stdout.write(f"{ESC}[{box_top + 1};{box_left}H")
-    sys.stdout.write("|" + (" " * (box_width - 2)) + "|")
-    sys.stdout.write(f"{ESC}[{box_top + 2};{box_left}H")
-    sys.stdout.write("|" + center("WIP UI", box_width - 2) + "|")
-    sys.stdout.write(f"{ESC}[{box_top + 3};{box_left}H")
-    sys.stdout.write("|" + (" " * (box_width - 2)) + "|")
-    sys.stdout.write(f"{ESC}[{box_top + 4};{box_left}H")
-    sys.stdout.write("+" + ("-" * (box_width - 2)) + "+")
-
-    # Hint
-    sys.stdout.write(f"{ESC}[{rows - 2};1H")
-    sys.stdout.write(center(hint, cols))
-    sys.stdout.flush()
+def render_ui(console: Console) -> Layout:
+    """Render the beautiful UI."""
+    layout = create_ui_layout()
+    
+    # Header with logo
+    logo_text = create_gradient_text(MESHTASTIC_LOGO, "#00ffff", "#0033ff")
+    layout["header"].update(Align.center(logo_text, vertical="middle"))
+    
+    # Body with input-like panel
+    input_text = Text()
+    input_text.append("Ask anything... ", style="dim")
+    input_text.append('"Fix broken tests"', style="white")
+    
+    status_text = Text()
+    status_text.append("\nBuild ", style="bold cyan")
+    status_text.append("WiFi Bridge Active ", style="white")
+    status_text.append("Ready", style="dim")
+    
+    input_text.append(status_text)
+    
+    input_panel = Panel(
+        Align.left(input_text),
+        border_style="blue",
+        padding=(1, 2),
+        style="on black"
+    )
+    
+    layout["body"].update(Align.center(input_panel, vertical="middle"))
+    
+    # Footer with hints
+    footer_text = Text()
+    footer_text.append("tab", style="dim")
+    footer_text.append(" switch agent  ", style="dim")
+    footer_text.append("ctrl+p", style="dim")
+    footer_text.append(" commands  ", style="dim")
+    footer_text.append("ctrl+c", style="dim")
+    footer_text.append(" exit", style="dim")
+    
+    layout["footer"].update(Align.center(footer_text, vertical="middle"))
+    
+    return layout
 
 
 def main() -> None:
+    """Main entry point."""
+    console = Console()
+    
     try:
-        render_wip()
-        while True:
-            time.sleep(1)
+        # Clear screen and hide cursor
+        console.clear()
+        console.show_cursor(False)
+        
+        # Render the UI
+        layout = render_ui(console)
+        
+        with Live(layout, console=console, screen=True, refresh_per_second=4):
+            while True:
+                time.sleep(0.25)
+                
     except KeyboardInterrupt:
         pass
     finally:
-        sys.stdout.write(ESC + "[?25h")  # Show cursor
-        sys.stdout.write(ESC + "[?1049l")  # Leave alternate screen
-        sys.stdout.flush()
+        console.show_cursor(True)
+        console.clear()
 
 
 if __name__ == "__main__":
