@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import queue
 import sys
@@ -29,6 +30,19 @@ MESHTASTIC_LOGO = """
 """
 
 BRIDGE_SUBTITLE = "WiFi Bridge"
+BRIDGE_VERSION = "unknown"
+
+
+def _load_version() -> str:
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    package_path = os.path.join(root, "package.json")
+    try:
+        with open(package_path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        version = data.get("version")
+        return str(version) if version else "unknown"
+    except Exception:
+        return "unknown"
 
 
 def _hex_to_rgb(color: str) -> tuple[int, int, int]:
@@ -357,6 +371,8 @@ def _render_footer(ui_state: UIState) -> Text:
         text.append(", ", style="dim")
         text.append("Esc", style="bold white")
         text.append(" to menu", style="dim")
+    text.append(" | ", style="dim")
+    text.append(f"v{BRIDGE_VERSION}", style="dim")
     return text
 
 
@@ -427,6 +443,8 @@ def main() -> None:
     backend = BackendService()
     ui_state = UIState()
     key_reader = KeyReader()
+    global BRIDGE_VERSION
+    BRIDGE_VERSION = _load_version()
     
     try:
         console.clear()

@@ -3,6 +3,9 @@ name: Publish to npm
 on:
   workflow_dispatch:
     inputs:
+      version:
+        description: "Version to publish (e.g. 0.1.1)"
+        required: true
       tag:
         description: "Optional dist-tag (e.g. latest, next)"
         required: false
@@ -20,6 +23,9 @@ jobs:
         with:
           node-version: "18"
           registry-url: "https://registry.npmjs.org"
+
+      - name: Set version
+        run: npm version "${{ inputs.version }}" --no-git-tag-version
 
       - name: Publish
         env:
