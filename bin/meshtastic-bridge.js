@@ -53,9 +53,16 @@ function resolvePython() {
 
 const args = process.argv.slice(2);
 if (args[0] === "update") {
+  console.log("meshbridge: updating meshtastic-bridge...");
   const update = spawnSync("npm", ["install", "-g", "meshtastic-bridge"], {
     stdio: "inherit",
   });
+  if (update.status === 0) {
+    const current = spawnSync("npm", ["list", "-g", "meshtastic-bridge", "--depth=0"], {
+      stdio: "inherit",
+    });
+    process.exit(current.status ?? 0);
+  }
   process.exit(update.status ?? 1);
 }
 
