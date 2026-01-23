@@ -5,7 +5,7 @@
   "license": "UNLICENSED",
   "type": "commonjs",
   "bin": {
-    "meshtastic-bridge": "bin/meshtastic-bridge.js"
+    "meshbridge": "bin/meshtastic-bridge.js"
   },
   "files": [
     "bin",

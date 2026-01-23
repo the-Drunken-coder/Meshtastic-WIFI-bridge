@@ -8,7 +8,7 @@ const fs = require("node:fs");
 const scriptPath = path.resolve(__dirname, "..", "ui_service", "ui.py");
 
 if (!fs.existsSync(scriptPath)) {
-  console.error("meshtastic-bridge: Missing ui_service/ui.py in package.");
+  console.error("meshbridge: Missing ui_service/ui.py in package.");
   process.exit(1);
 }
 
@@ -54,13 +54,13 @@ function resolvePython() {
 const python = resolvePython();
 if (!python) {
   console.error(
-    "meshtastic-bridge: Python 3 not found. Set MESHTASTIC_BRIDGE_PYTHON to a python executable."
+    "meshbridge: Python 3 not found. Set MESHTASTIC_BRIDGE_PYTHON to a python executable."
   );
   process.exit(1);
 }
 
 if (process.argv.slice(2).length > 0) {
-  console.warn("meshtastic-bridge: CLI flags are not supported yet (WIP UI only).");
+  console.warn("meshbridge: CLI flags are not supported yet (WIP UI only).");
 }
 
 const result = spawnSync(
@@ -70,7 +70,7 @@ const result = spawnSync(
 );
 
 if (result.error) {
-  console.error(`meshtastic-bridge: ${result.error.message}`);
+  console.error(`meshbridge: ${result.error.message}`);
   process.exit(1);
 }
 
