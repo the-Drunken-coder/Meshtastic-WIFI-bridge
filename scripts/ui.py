@@ -55,9 +55,11 @@ def create_ui_layout() -> Layout:
     layout = Layout()
     
     layout.split_column(
-        Layout(name="header", size=12),
-        Layout(name="body", size=7),
+        Layout(name="top_spacer"),
+        Layout(name="header", size=9),
+        Layout(name="body", size=8),
         Layout(name="footer", size=3),
+        Layout(name="bottom_spacer"),
     )
     
     return layout
@@ -67,38 +69,42 @@ def render_ui(console: Console) -> Layout:
     """Render the beautiful UI."""
     layout = create_ui_layout()
     
+    # Top spacer for vertical centering
+    layout["top_spacer"].update("")
+    
     # Header with logo
     logo_text = create_gradient_text(MESHTASTIC_LOGO, "#00ffff", "#0033ff")
     layout["header"].update(Align.center(logo_text, vertical="middle"))
     
     # Body with status panel
-    input_text = Text()
-    input_text.append("WiFi Bridge ", style="dim")
-    input_text.append("Initializing...", style="white")
-    
-    status_text = Text()
-    status_text.append("\nStatus: ", style="bold cyan")
-    status_text.append("Ready to Connect ", style="white")
-    status_text.append("(WIP)", style="dim")
-    
-    input_text.append(status_text)
+    content_text = Text()
+    content_text.append("Input Methods: ", style="bold cyan")
+    content_text.append("WIP", style="yellow bold")
+    content_text.append("\n\nStatus: ", style="bold cyan")
+    content_text.append("Bridge Ready", style="green")
+    content_text.append("\n\n", style="dim")
+    content_text.append("Note: Input functionality coming soon", style="dim italic")
     
     input_panel = Panel(
-        Align.left(input_text),
-        border_style="blue",
+        Align.center(content_text, vertical="middle"),
+        border_style="cyan",
         padding=(1, 2),
-        style="on black"
+        title="[bold cyan]Meshtastic WiFi Bridge[/bold cyan]",
+        title_align="center"
     )
     
     layout["body"].update(Align.center(input_panel, vertical="middle"))
     
     # Footer with hints
     footer_text = Text()
-    footer_text.append("ctrl+c", style="dim")
-    footer_text.append(" to exit  ", style="dim")
-    footer_text.append("Work in Progress", style="bold dim")
+    footer_text.append("Press ", style="dim")
+    footer_text.append("Ctrl+C", style="bold white")
+    footer_text.append(" to exit", style="dim")
     
     layout["footer"].update(Align.center(footer_text, vertical="middle"))
+    
+    # Bottom spacer for vertical centering
+    layout["bottom_spacer"].update("")
     
     return layout
 
