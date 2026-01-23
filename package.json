@@ -2,18 +2,18 @@
   "name": "meshtastic-bridge",
   "version": "0.1.0",
   "description": "Meshtastic bridge CLI for reliable chunked transport.",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "type": "commonjs",
   "bin": {
     "meshbridge": "bin/meshtastic-bridge.js"
   },
   "files": [
     "bin",
-    "scripts",
+    "ui_service",
     "src",
     "modes",
-    "ui_service",
     "README.md",
+    "LICENSE",
     "docs"
   ],
   "engines": {

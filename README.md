@@ -22,10 +22,11 @@ This project ships a small Node wrapper so you can run the Python CLI via an
 ```bash
 npm install -g .
 pip install -r requirements.txt
-meshtastic-bridge
+meshbridge
 ```
 
 Set `MESHTASTIC_BRIDGE_PYTHON` if you need to point at a specific Python executable.
+The UI uses the Meshtastic Python stack, so ensure `requirements.txt` is installed.
 
 ## Quick start (simulated radios)
 
