@@ -191,19 +191,7 @@ class BackendService:
             with self._lock:
                 self._state.local_radio_id = local_id
             
-            # Override run_once to capture traffic for UI display
-            original_run_once = gateway.run_once
-            def monitored_run_once(timeout=0.25):
-                sender, envelope = transport.receive_message(timeout=timeout)
-                if envelope is not None and sender is not None:
-                    self._record_gateway_event(sender, envelope)
-                    # Put message back for processing by creating new envelope
-                    # Since we can't "put back" we need a different approach
-                    # Let's just let run_once handle everything
-                return None
-            
-            # Actually, we need to monitor traffic differently
-            # Let's hook into the transport receive to capture messages
+            # Hook into the transport receive to capture messages for UI display
             original_receive = transport.receive_message
             def monitored_receive(timeout=0.25):
                 sender, envelope = original_receive(timeout=timeout)
