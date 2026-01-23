@@ -3,3 +3,4 @@ zstandard
 meshtastic
 pypubsub
 typing_extensions
+rich
