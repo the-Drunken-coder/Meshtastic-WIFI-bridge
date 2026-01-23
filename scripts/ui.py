@@ -71,15 +71,15 @@ def render_ui(console: Console) -> Layout:
     logo_text = create_gradient_text(MESHTASTIC_LOGO, "#00ffff", "#0033ff")
     layout["header"].update(Align.center(logo_text, vertical="middle"))
     
-    # Body with input-like panel
+    # Body with status panel
     input_text = Text()
-    input_text.append("Ask anything... ", style="dim")
-    input_text.append('"Fix broken tests"', style="white")
+    input_text.append("WiFi Bridge ", style="dim")
+    input_text.append("Initializing...", style="white")
     
     status_text = Text()
-    status_text.append("\nBuild ", style="bold cyan")
-    status_text.append("WiFi Bridge Active ", style="white")
-    status_text.append("Ready", style="dim")
+    status_text.append("\nStatus: ", style="bold cyan")
+    status_text.append("Ready to Connect ", style="white")
+    status_text.append("(WIP)", style="dim")
     
     input_text.append(status_text)
     
@@ -94,12 +94,9 @@ def render_ui(console: Console) -> Layout:
     
     # Footer with hints
     footer_text = Text()
-    footer_text.append("tab", style="dim")
-    footer_text.append(" switch agent  ", style="dim")
-    footer_text.append("ctrl+p", style="dim")
-    footer_text.append(" commands  ", style="dim")
     footer_text.append("ctrl+c", style="dim")
-    footer_text.append(" exit", style="dim")
+    footer_text.append(" to exit  ", style="dim")
+    footer_text.append("Work in Progress", style="bold dim")
     
     layout["footer"].update(Align.center(footer_text, vertical="middle"))
     
