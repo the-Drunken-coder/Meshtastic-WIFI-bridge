@@ -5,9 +5,10 @@ from __future__ import annotations
 import threading
 import time
 from collections import deque
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Tuple
+from typing import Callable
 
 import sys
 
@@ -19,10 +20,52 @@ if SRC.exists() and str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from client import MeshtasticClient
+from dedupe import DedupeKeys, RequestDeduper
 from gateway import MeshtasticGateway
 from message import MessageEnvelope
 from radio import build_radio
 from transport import MeshtasticTransport
+
+
+class TransportWrapper:
+    """Wrapper for MeshtasticTransport that allows observing received messages."""
+    
+    def __init__(
+        self,
+        transport: MeshtasticTransport,
+        on_message: Callable[[str, MessageEnvelope], None] | None = None,
+    ) -> None:
+        self._transport = transport
+        self._on_message = on_message
+    
+    def receive_message(self, timeout: float = 0.25) -> tuple[str | None, MessageEnvelope | None]:
+        """Receive a message and notify observer if provided."""
+        sender, envelope = self._transport.receive_message(timeout=timeout)
+        if envelope is not None and sender is not None and self._on_message:
+            self._on_message(sender, envelope)
+        return sender, envelope
+    
+    def send_message(self, envelope: MessageEnvelope, destination: str) -> None:
+        """Send a message via wrapped transport."""
+        self._transport.send_message(envelope, destination)
+    
+    def should_process(self, sender: str, envelope: MessageEnvelope) -> bool:
+        """Check if message should be processed."""
+        return self._transport.should_process(sender, envelope)
+    
+    def build_dedupe_keys(self, sender: str, envelope: MessageEnvelope) -> DedupeKeys:
+        """Build deduplication keys."""
+        return self._transport.build_dedupe_keys(sender, envelope)
+    
+    @property
+    def deduper(self) -> RequestDeduper:
+        """Access to deduper."""
+        return self._transport.deduper
+    
+    def __getattr__(self, name: str):
+        """Forward all other attributes to wrapped transport."""
+        return getattr(self._transport, name)
+
 
 
 @dataclass
@@ -56,7 +99,7 @@ def _normalize_ports(ports: Iterable[object]) -> list[str]:
     return normalized
 
 
-def detect_radio_ports() -> Tuple[list[str], str | None]:
+def detect_radio_ports() -> tuple[list[str], str | None]:
     meshtastic_err = None
     serial_err = None
     try:
@@ -186,19 +229,17 @@ class BackendService:
             port = ports[0]
             radio = build_radio(False, port, "gateway")
             transport = MeshtasticTransport(radio)
-            gateway = MeshtasticGateway(transport)
+            
+            # Wrap transport to observe messages
+            wrapped_transport = TransportWrapper(
+                transport,
+                on_message=self._record_gateway_event,
+            )
+            gateway = MeshtasticGateway(wrapped_transport)
+            
             local_id = _resolve_local_radio_id(radio)
             with self._lock:
                 self._state.local_radio_id = local_id
-            
-            # Hook into the transport receive to capture messages for UI display
-            original_receive = transport.receive_message
-            def monitored_receive(timeout=0.25):
-                sender, envelope = original_receive(timeout=timeout)
-                if envelope is not None and sender is not None:
-                    self._record_gateway_event(sender, envelope)
-                return sender, envelope
-            transport.receive_message = monitored_receive
             
             while not self._gateway_stop_event.is_set():
                 gateway.run_once(timeout=0.25)
