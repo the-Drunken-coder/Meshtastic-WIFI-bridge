@@ -1,0 +1,23 @@
+{
+  "name": "meshtastic-bridge",
+  "version": "0.1.0",
+  "description": "Meshtastic bridge CLI for reliable chunked transport.",
+  "license": "MIT",
+  "type": "commonjs",
+  "bin": {
+    "meshtastic-bridge": "bin/meshtastic-bridge.js"
+  },
+  "files": [
+    "bin",
+    "ui_service",
+    "src",
+    "modes",
+    "README.md",
+    "LICENSE",
+    "docs",
+    "requirements.txt"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}

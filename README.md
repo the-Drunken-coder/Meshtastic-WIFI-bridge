@@ -14,6 +14,28 @@ ACK/NACK reliability strategies, deduplication, and optional spooling.
 - In-memory radio for local simulation/testing
 - Hardware harness for manual testing with real radios
 
+## Install as npm CLI
+
+This project ships a small Node wrapper so you can run the Python CLI via an
+`npm`-installed command.
+
+```bash
+# Install from npm registry (recommended)
+npm install -g meshtastic-bridge
+
+# Or, from a cloned checkout of this repository:
+npm install -g .
+
+# Ensure Python dependencies are installed:
+pip install -r requirements.txt
+
+# Run the CLI:
+meshtastic-bridge
+```
+
+Set `MESHTASTIC_BRIDGE_PYTHON` if you need to point at a specific Python executable.
+The UI uses the Meshtastic Python stack, so ensure `requirements.txt` is installed.
+
 ## Quick start (simulated radios)
 
 Terminal 1 - start a gateway:
