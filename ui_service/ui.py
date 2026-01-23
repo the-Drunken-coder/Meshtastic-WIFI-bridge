@@ -122,11 +122,9 @@ def create_ui_layout() -> Layout:
     layout = Layout()
     
     layout.split_column(
-        Layout(name="top_spacer"),
         Layout(name="header", size=8),
-        Layout(name="body", size=16),
+        Layout(name="body"),
         Layout(name="footer", size=4),
-        Layout(name="bottom_spacer", size=1),
     )
     
     return layout
@@ -140,6 +138,8 @@ class UIState:
     client_url: str = ""
     client_active_field: int = 0
     client_scroll: int = 0
+    client_notice: str | None = None
+    client_notice_time: float = 0.0
 
 
 MENU_OPTIONS = ["Open Client", "Start Gateway"]
@@ -261,12 +261,9 @@ def render_ui(console: Console, backend_state: BackendState, ui_state: UIState) 
     layout = create_ui_layout()
     content_width = max(20, console.size.width - 20)
     
-    # Top spacer for vertical centering
-    layout["top_spacer"].update("")
-    
     # Header with logo
     logo_text = create_gradient_text(MESHTASTIC_LOGO, "#00ffff", "#0033ff")
-    layout["header"].update(Align.center(logo_text, vertical="middle"))
+    layout["header"].update(Align.center(logo_text, vertical="top"))
     
     content_text = _render_body(backend_state, ui_state, content_width)
     
@@ -278,14 +275,11 @@ def render_ui(console: Console, backend_state: BackendState, ui_state: UIState) 
         title_align="center"
     )
     
-    layout["body"].update(Align.center(input_panel, vertical="middle"))
+    layout["body"].update(Align.center(input_panel, vertical="top"))
     
     footer_text = _render_footer(ui_state)
     
     layout["footer"].update(Align.center(footer_text, vertical="bottom"))
-    
-    # Bottom spacer for vertical centering
-    layout["bottom_spacer"].update("")
     
     return layout
 
@@ -348,6 +342,12 @@ def _render_gateway_body(backend_state: BackendState) -> Text:
         text.append(", ".join(backend_state.connected_radios), style="green")
     else:
         text.append("none", style="dim")
+    text.append("\nLast RX: ", style="bold cyan")
+    text.append(_format_timestamp(backend_state.last_rx_time), style="green")
+    text.append("\nLast TX: ", style="bold cyan")
+    text.append(_format_timestamp(backend_state.last_tx_time), style="green")
+    text.append("\nSpool Depth: ", style="bold cyan")
+    text.append(str(backend_state.spool_depth), style="green")
     text.append("\nLast Payload: ", style="bold cyan")
     if backend_state.gateway_last_payload:
         text.append(backend_state.gateway_last_payload, style="green")
@@ -377,6 +377,17 @@ def _render_client_body(
         text.append(backend_state.radio_ports[0], style="green")
     else:
         text.append("none", style="dim")
+    text.append("\nLocal Radio ID: ", style="bold cyan")
+    if backend_state.local_radio_id:
+        text.append(backend_state.local_radio_id, style="green")
+    else:
+        text.append("Searching...", style="dim")
+    text.append("\nLast RX: ", style="bold cyan")
+    text.append(_format_timestamp(backend_state.last_rx_time), style="green")
+    text.append("\nLast TX: ", style="bold cyan")
+    text.append(_format_timestamp(backend_state.last_tx_time), style="green")
+    text.append("\nSpool Depth: ", style="bold cyan")
+    text.append(str(backend_state.spool_depth), style="green")
     text.append("\n\n", style="dim")
     fields = [
         ("Gateway ID", ui_state.client_gateway_id),
@@ -416,6 +427,13 @@ def _render_client_body(
         text.append(f"\nPayload ({range_label}):", style="bold cyan")
         for line in payload_lines[start:end]:
             text.append(f"\n{line}", style="green")
+    if backend_state.client_history:
+        text.append("\n\nRecent Responses:", style="bold cyan")
+        for entry in backend_state.client_history[:3]:
+            text.append(f"\n{entry}", style="dim")
+    notice = _notice_text(ui_state)
+    if notice:
+        text.append(f"\n\n{notice}", style="yellow")
     return text
 
 
@@ -444,6 +462,56 @@ def _clamp_scroll(offset: int, total: int, window: int) -> int:
     return max(0, min(offset, max_offset))
 
 
+def _format_timestamp(ts: float | None) -> str:
+    if not ts:
+        return "none"
+    return time.strftime("%H:%M:%S", time.localtime(ts))
+
+
+def _set_notice(ui_state: UIState, message: str) -> None:
+    ui_state.client_notice = message
+    ui_state.client_notice_time = time.time()
+
+
+def _notice_text(ui_state: UIState, ttl_seconds: float = 3.0) -> str | None:
+    if not ui_state.client_notice:
+        return None
+    if time.time() - ui_state.client_notice_time > ttl_seconds:
+        ui_state.client_notice = None
+        return None
+    return ui_state.client_notice
+
+
+def _copy_to_clipboard(text: str) -> bool:
+    try:
+        import tkinter  # type: ignore
+
+        root = tkinter.Tk()
+        root.withdraw()
+        root.clipboard_clear()
+        root.clipboard_append(text)
+        root.update()
+        root.destroy()
+        return True
+    except Exception:
+        pass
+
+    try:
+        if os.name == "nt":
+            import subprocess
+
+            subprocess.run(
+                ["powershell", "-NoProfile", "-Command", "Set-Clipboard", "-Value", text],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return True
+    except Exception:
+        return False
+    return False
+
+
 def _render_footer(ui_state: UIState) -> Text:
     text = Text()
     text.append("Ctrl+C", style="bold white")
@@ -462,6 +530,12 @@ def _render_footer(ui_state: UIState) -> Text:
         text.append(" to switch, ", style="dim")
         text.append("Enter", style="bold white")
         text.append(" to submit", style="dim")
+        text.append(", ", style="dim")
+        text.append("H", style="bold white")
+        text.append(" for health", style="dim")
+        text.append(", ", style="dim")
+        text.append("C", style="bold white")
+        text.append(" to copy", style="dim")
         text.append(", ", style="dim")
         text.append("Esc", style="bold white")
         text.append(" to menu", style="dim")
@@ -507,6 +581,22 @@ def _handle_menu_key(key: str, ui_state: UIState, backend: BackendService) -> No
 def _handle_client_key(key: str, ui_state: UIState, backend: BackendService) -> None:
     if key in {"esc", "q"}:
         ui_state.view = "menu"
+        return
+    if key.lower() == "h":
+        if ui_state.client_gateway_id:
+            backend.send_health_request(ui_state.client_gateway_id.strip())
+            _set_notice(ui_state, "Health request sent")
+        else:
+            _set_notice(ui_state, "Gateway ID required for health")
+        return
+    if key.lower() == "c":
+        snapshot = backend.snapshot()
+        payload = snapshot.client_last_payload or snapshot.client_response
+        if payload:
+            ok = _copy_to_clipboard(payload)
+            _set_notice(ui_state, "Copied to clipboard" if ok else "Copy failed")
+        else:
+            _set_notice(ui_state, "Nothing to copy")
         return
     if key == "pgup":
         ui_state.client_scroll = max(0, ui_state.client_scroll - 1)

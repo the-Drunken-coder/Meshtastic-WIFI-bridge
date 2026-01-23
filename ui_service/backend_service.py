@@ -35,9 +35,11 @@ class TransportWrapper:
         self,
         transport: MeshtasticTransport,
         on_message: Callable[[str, MessageEnvelope, dict[str, int] | None], None] | None = None,
+        on_send: Callable[[], None] | None = None,
     ) -> None:
         self._transport = transport
         self._on_message = on_message
+        self._on_send = on_send
     
     def receive_message(self, timeout: float = 0.25) -> tuple[str | None, MessageEnvelope | None]:
         """Receive a message and notify observer if provided."""
@@ -52,6 +54,8 @@ class TransportWrapper:
     
     def send_message(self, envelope: MessageEnvelope, destination: str) -> None:
         """Send a message via wrapped transport."""
+        if self._on_send:
+            self._on_send()
         self._transport.send_message(envelope, destination)
     
     def should_process(self, sender: str, envelope: MessageEnvelope) -> bool:
@@ -97,6 +101,10 @@ class BackendState:
     client_last_payload: str | None = None
     gateway_last_payload: str | None = None
     gateway_last_chunks_total: int = 0
+    last_rx_time: float | None = None
+    last_tx_time: float | None = None
+    spool_depth: int = 0
+    client_history: list[str] = field(default_factory=list)
 
 
 def _normalize_ports(ports: Iterable[object]) -> list[str]:
@@ -196,6 +204,10 @@ class BackendService:
                 client_last_payload=self._state.client_last_payload,
                 gateway_last_payload=self._state.gateway_last_payload,
                 gateway_last_chunks_total=self._state.gateway_last_chunks_total,
+                last_rx_time=self._state.last_rx_time,
+                last_tx_time=self._state.last_tx_time,
+                spool_depth=self._state.spool_depth,
+                client_history=list(self._state.client_history),
             )
 
     def _run(self) -> None:
@@ -255,6 +267,7 @@ class BackendService:
             self._state.client_recv_chunks_total = 0
             self._state.client_recv_eta_seconds = None
             self._state.client_last_payload = None
+            self._state.client_history = list(self._state.client_history)
         if self._client_thread and self._client_thread.is_alive():
             return
         self._client_thread = threading.Thread(
@@ -262,6 +275,23 @@ class BackendService:
             args=(gateway_id, url),
             daemon=True,
             name="meshtastic-client",
+        )
+        self._client_thread.start()
+
+    def send_health_request(self, gateway_id: str) -> None:
+        with self._lock:
+            self._state.mode = "client"
+            self._state.client_gateway_id = gateway_id
+            self._state.client_status = "sending"
+            self._state.client_response = None
+            self._state.client_error = None
+        if self._client_thread and self._client_thread.is_alive():
+            return
+        self._client_thread = threading.Thread(
+            target=self._run_health_request,
+            args=(gateway_id,),
+            daemon=True,
+            name="meshtastic-client-health",
         )
         self._client_thread.start()
 
@@ -277,6 +307,7 @@ class BackendService:
             wrapped_transport = TransportWrapper(
                 transport,
                 on_message=self._record_gateway_event,
+                on_send=self._record_tx_event,
             )
             gateway = MeshtasticGateway(wrapped_transport)
             
@@ -300,7 +331,11 @@ class BackendService:
                     self._state.client_status = "error"
                     self._state.client_error = self._radio_error or "no accessible radios"
                 return
-            client = MeshtasticClient(transport, gateway_id)
+            wrapped_transport = TransportWrapper(
+                transport,
+                on_send=self._record_tx_event,
+            )
+            client = MeshtasticClient(wrapped_transport, gateway_id)
             response = client.http_request(
                 url=url,
                 progress_callback=self._record_client_progress,
@@ -310,18 +345,51 @@ class BackendService:
                 self._state.client_status = "done"
                 self._state.client_response = summary
                 self._state.client_last_payload = _format_payload(response.data)
+                self._state.client_history = _append_history(
+                    self._state.client_history,
+                    f"{_timestamp()} http_request {summary}",
+                )
         except Exception as exc:
             with self._lock:
                 self._state.client_status = "error"
                 self._state.client_error = str(exc)
 
+    def _run_health_request(self, gateway_id: str) -> None:
+        try:
+            transport = self._transport
+            if transport is None:
+                with self._lock:
+                    self._state.client_status = "error"
+                    self._state.client_error = self._radio_error or "no accessible radios"
+                return
+            wrapped_transport = TransportWrapper(
+                transport,
+                on_send=self._record_tx_event,
+            )
+            client = MeshtasticClient(wrapped_transport, gateway_id)
+            start = time.time()
+            response = client.send_request("health")
+            latency = (time.time() - start) * 1000.0
+            summary = _summarize_response(response)
+            with self._lock:
+                self._state.client_status = "done"
+                self._state.client_response = f"{summary} ({latency:.0f} ms)"
+                self._state.client_last_payload = _format_payload(response.data)
+                self._state.client_history = _append_history(
+                    self._state.client_history,
+                    f"{_timestamp()} health {summary} ({latency:.0f} ms)",
+                )
+        except Exception as exc:
+            with self._lock:
+                self._state.client_status = "error"
+                self._state.client_error = str(exc)
     def _record_gateway_event(
         self,
         sender: str,
         envelope: MessageEnvelope,
         progress: dict[str, int] | None,
     ) -> None:
-        timestamp = time.strftime("%H:%M:%S")
+        timestamp = _timestamp()
         command = envelope.command or envelope.type or "message"
         message = f"{timestamp} {sender} {command}"
         if envelope.command == "http_request":
@@ -338,6 +406,8 @@ class BackendService:
             self._state.gateway_last_payload = _format_payload(envelope.data)
             if progress and progress.get("total"):
                 self._state.gateway_last_chunks_total = int(progress["total"])
+            self._state.last_rx_time = time.time()
+            self._state.spool_depth = _get_spool_depth(self._transport)
 
     def _record_client_progress(self, update: dict[str, object]) -> None:
         phase = str(update.get("phase", ""))
@@ -352,6 +422,13 @@ class BackendService:
                 )
                 self._state.client_recv_chunks_total = int(update.get("total_chunks", 0))
                 self._state.client_recv_eta_seconds = _coerce_seconds(update.get("eta_seconds"))
+                self._state.last_rx_time = time.time()
+            self._state.spool_depth = _get_spool_depth(self._transport)
+
+    def _record_tx_event(self) -> None:
+        with self._lock:
+            self._state.last_tx_time = time.time()
+            self._state.spool_depth = _get_spool_depth(self._transport)
 
     def _ensure_radio_connection(self, ports: list[str], error: str | None) -> None:
         if self._radio:
@@ -369,6 +446,8 @@ class BackendService:
             self._transport = MeshtasticTransport(radio)
             self._radio_port = used_port
             self._radio_error = None
+            with self._lock:
+                self._state.local_radio_id = _resolve_local_radio_id(radio)
         except Exception as exc:
             self._radio_error = str(exc)
 
@@ -444,3 +523,21 @@ def _coerce_seconds(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _append_history(history: list[str], entry: str, limit: int = 5) -> list[str]:
+    updated = [entry] + history
+    return updated[:limit]
+
+
+def _timestamp() -> str:
+    return time.strftime("%H:%M:%S")
+
+
+def _get_spool_depth(transport: MeshtasticTransport | None) -> int:
+    if transport and transport.spool:
+        try:
+            return int(transport.spool.depth())
+        except Exception:
+            return 0
+    return 0
