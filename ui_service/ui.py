@@ -31,25 +31,71 @@ MESHTASTIC_LOGO = """
 BRIDGE_SUBTITLE = "WiFi Bridge"
 
 
+def _hex_to_rgb(color: str) -> tuple[int, int, int]:
+    """Convert a hex color string like '#rrggbb' or 'rrggbb' to an (r, g, b) tuple."""
+    color = color.lstrip("#")
+    if len(color) != 6:
+        # Fallback to white if the color format is unexpected
+        return (255, 255, 255)
+    try:
+        r = int(color[0:2], 16)
+        g = int(color[2:4], 16)
+        b = int(color[4:6], 16)
+    except ValueError:
+        # Fallback to white on parse error
+        return (255, 255, 255)
+    return (r, g, b)
+
+
+def _rgb_to_hex(rgb: tuple[int, int, int]) -> str:
+    """Convert an (r, g, b) tuple to a hex color string '#rrggbb'."""
+    r, g, b = rgb
+    r = max(0, min(255, r))
+    g = max(0, min(255, g))
+    b = max(0, min(255, b))
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def _interpolate_rgb(
+    start: tuple[int, int, int],
+    end: tuple[int, int, int],
+    ratio: float,
+) -> tuple[int, int, int]:
+    """Linearly interpolate between two RGB colors."""
+    ratio = max(0.0, min(1.0, ratio))
+    sr, sg, sb = start
+    er, eg, eb = end
+    r = int(sr + (er - sr) * ratio)
+    g = int(sg + (eg - sg) * ratio)
+    b = int(sb + (eb - sb) * ratio)
+    return (r, g, b)
+
+
 def create_gradient_text(text: str, start_color: str, end_color: str) -> Text:
     """Create text with gradient color effect."""
     result = Text()
     lines = text.split('\n')
     
-    # Define gradient colors from cyan to blue
-    colors = [
-        "#00ffff",  # Cyan
-        "#00d4ff",
-        "#00aaff",
-        "#0080ff",
-        "#0055ff",
-        "#0033ff",  # Blue
-    ]
+    # Prepare gradient endpoints
+    start_rgb = _hex_to_rgb(start_color)
+    end_rgb = _hex_to_rgb(end_color)
     
-    for i, line in enumerate(lines):
+    # Count non-empty lines to spread the gradient across them
+    non_empty_count = sum(1 for line in lines if line.strip())
+    if non_empty_count <= 0:
+        return result
+    
+    current_index = 0
+    for line in lines:
         if line.strip():
-            color_idx = min(i, len(colors) - 1)
-            result.append(line + "\n", style=Style(color=colors[color_idx], bold=True))
+            if non_empty_count == 1:
+                ratio = 0.0
+            else:
+                ratio = current_index / (non_empty_count - 1)
+            rgb = _interpolate_rgb(start_rgb, end_rgb, ratio)
+            color_hex = _rgb_to_hex(rgb)
+            result.append(line + "\n", style=Style(color=color_hex, bold=True))
+            current_index += 1
         else:
             result.append("\n")
     
