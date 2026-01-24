@@ -285,8 +285,9 @@ def test_parse_nack_legacy_format() -> None:
 def test_parse_nack_legacy_format_edge_case() -> None:
     """Test parsing legacy NACK where first sequence has high byte 0x00.
     
-    This tests the fix for the format detection bug where legacy payloads
-    with first sequence < 256 would be misdetected as RLE.
+    This tests the fix for the format detection bug. The old detection logic
+    checked if payload[1] (high byte of first uint16 in legacy format) was
+    0x00 or 0x01, incorrectly treating it as an RLE entry type marker.
     """
     # Legacy format with first sequence = 50 (high byte 0x00)
     count = 3
@@ -304,8 +305,9 @@ def test_parse_nack_legacy_format_edge_case() -> None:
 def test_parse_nack_legacy_format_high_byte_01() -> None:
     """Test parsing legacy NACK where first sequence has high byte 0x01.
     
-    This tests the fix for the format detection bug where legacy payloads
-    with first sequence in range 256-511 would be misdetected as RLE.
+    This tests the fix for the format detection bug. The old detection logic
+    checked if payload[1] (high byte of first uint16 in legacy format) was
+    0x00 or 0x01, incorrectly treating it as an RLE entry type marker.
     """
     # Legacy format with first sequence in range 256-511 (high byte 0x01)
     count = 2
