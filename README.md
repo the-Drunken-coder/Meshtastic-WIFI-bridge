@@ -13,6 +13,9 @@ ACK/NACK reliability strategies, deduplication, and optional spooling.
 - Optional on-disk spool for retrying outgoing messages
 - In-memory radio for local simulation/testing
 - Hardware harness for manual testing with real radios
+- Interactive TUI with command palette for radio and mode selection
+- Port accessibility detection to verify radio connections
+- JSON-based mode configuration for transport parameters
 
 ## Install as npm CLI
 
@@ -35,6 +38,34 @@ meshbridge
 
 Set `MESHTASTIC_BRIDGE_PYTHON` if you need to point at a specific Python executable.
 The UI uses the Meshtastic Python stack, so ensure `requirements.txt` is installed.
+
+## Interactive TUI
+
+The `meshbridge` command launches an interactive terminal UI that provides:
+
+- **Real-time monitoring**: View radio connection status, gateway traffic, and message payloads
+- **Command palette** (Ctrl+P): Access all commands and settings
+- **Radio port selection**: Choose which serial port to connect to from detected and accessible ports
+- **Mode configuration**: Switch between transport modes with different reliability strategies and parameters
+- **Gateway/client switching**: Start gateway service or send client requests via the command palette
+
+### TUI Key Bindings
+
+- `Ctrl+P` - Open command palette
+- `↑/↓` or `j/k` - Navigate palette options
+- `Enter` - Select palette option
+- `Esc` - Close palette / Cancel
+- `Ctrl+C` - Quit application
+
+### Mode Configuration
+
+Transport modes are defined in JSON files in the `modes/` directory. Each mode can customize:
+- Chunk size and header format
+- ACK/NACK reliability strategy (simple, staged, windowed, parity)
+- Timeout and retry parameters
+- Compression settings
+
+Create custom modes by adding new JSON files to the `modes/` directory.
 
 ## Quick start (simulated radios)
 
