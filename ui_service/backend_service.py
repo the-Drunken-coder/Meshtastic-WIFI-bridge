@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+import base64
 from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -100,7 +101,11 @@ class BackendState:
     client_recv_chunks_total: int = 0
     client_recv_eta_seconds: float | None = None
     client_last_payload: str | None = None
+    client_last_payload_raw: str | None = None
+    client_last_payload_decoded: str | None = None
     gateway_last_payload: str | None = None
+    gateway_last_payload_raw: str | None = None
+    gateway_last_payload_decoded: str | None = None
     gateway_last_chunks_total: int = 0
     last_rx_time: float | None = None
     last_tx_time: float | None = None
@@ -207,7 +212,11 @@ class BackendService:
                 client_recv_chunks_total=self._state.client_recv_chunks_total,
                 client_recv_eta_seconds=self._state.client_recv_eta_seconds,
                 client_last_payload=self._state.client_last_payload,
+                client_last_payload_raw=self._state.client_last_payload_raw,
+                client_last_payload_decoded=self._state.client_last_payload_decoded,
                 gateway_last_payload=self._state.gateway_last_payload,
+                gateway_last_payload_raw=self._state.gateway_last_payload_raw,
+                gateway_last_payload_decoded=self._state.gateway_last_payload_decoded,
                 gateway_last_chunks_total=self._state.gateway_last_chunks_total,
                 last_rx_time=self._state.last_rx_time,
                 last_tx_time=self._state.last_tx_time,
@@ -396,6 +405,8 @@ class BackendService:
                 self._state.client_status = "done"
                 self._state.client_response = summary
                 self._state.client_last_payload = _format_payload(response.data)
+                self._state.client_last_payload_raw = _stringify_payload(response.data)
+                self._state.client_last_payload_decoded = _decode_content(response.data)
                 self._state.client_history = _append_history(
                     self._state.client_history,
                     f"{_timestamp()} http_request {summary}",
@@ -426,6 +437,8 @@ class BackendService:
                 self._state.client_status = "done"
                 self._state.client_response = f"{summary} ({latency:.0f} ms)"
                 self._state.client_last_payload = _format_payload(response.data)
+                self._state.client_last_payload_raw = _stringify_payload(response.data)
+                self._state.client_last_payload_decoded = _decode_content(response.data)
                 self._state.client_history = _append_history(
                     self._state.client_history,
                     f"{_timestamp()} health {summary} ({latency:.0f} ms)",
@@ -455,6 +468,8 @@ class BackendService:
             self._state.connected_radios = sorted(self._connected_radios)
             self._state.gateway_traffic = list(self._gateway_log)
             self._state.gateway_last_payload = _format_payload(envelope.data)
+            self._state.gateway_last_payload_raw = _stringify_payload(envelope.data)
+            self._state.gateway_last_payload_decoded = _decode_content(envelope.data)
             if progress and progress.get("total"):
                 self._state.gateway_last_chunks_total = int(progress["total"])
             self._state.last_rx_time = time.time()
@@ -603,13 +618,34 @@ def _summarize_response(response: MessageEnvelope) -> str:
 def _format_payload(payload: object, limit: int = 160) -> str | None:
     if payload is None:
         return None
-    try:
-        text = json.dumps(payload, ensure_ascii=True)
-    except Exception:
-        text = str(payload)
+    text = _stringify_payload(payload)
     if len(text) > limit:
         return text[: limit - 3] + "..."
     return text
+
+
+def _stringify_payload(payload: object) -> str:
+    try:
+        return json.dumps(payload, ensure_ascii=True)
+    except Exception:
+        return str(payload)
+
+
+def _decode_content(payload: object) -> str | None:
+    try:
+        if isinstance(payload, dict):
+            b64 = payload.get("content_b64")
+            if not b64 and isinstance(payload.get("result"), dict):
+                b64 = payload["result"].get("content_b64")
+            if isinstance(b64, str):
+                raw = base64.b64decode(b64)
+                try:
+                    return raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    return raw.hex()
+    except Exception:
+        return None
+    return None
 
 
 def _coerce_seconds(value: object) -> float | None:

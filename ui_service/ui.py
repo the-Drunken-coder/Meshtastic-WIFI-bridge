@@ -24,15 +24,15 @@ from backend_service import BackendService, BackendState
 
 
 MESHTASTIC_LOGO = """
-███╗   ███╗███████╗███████╗██╗  ██╗████████╗ █████╗ ███████╗████████╗██╗ ██████╗
-████╗ ████║██╔════╝██╔════╝██║  ██║╚══██╔══╝██╔══██╗██╔════╝╚══██╔══╝██║██╔════╝
-██╔████╔██║█████╗  ███████╗███████║   ██║   ███████║███████╗   ██║   ██║██║     
-██║╚██╔╝██║██╔══╝  ╚════██║██╔══██║   ██║   ██╔══██║╚════██║   ██║   ██║██║     
-██║ ╚═╝ ██║███████╗███████║██║  ██║   ██║   ██║  ██║███████║   ██║   ██║╚██████╗
-╚═╝     ╚═╝╚══════╝╚══════╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚══════╝   ╚═╝   ╚═╝ ╚═════╝
+███╗   ███╗███████╗███████╗██╗  ██╗██████╗ ██████╗ ██╗██████╗  ██████╗ ███████╗
+████╗ ████║██╔════╝██╔════╝██║  ██║██╔══██╗██╔══██╗██║██╔══██╗██╔════╝ ██╔════╝
+██╔████╔██║█████╗  ███████╗███████║██████╔╝██████╔╝██║██║  ██║██║  ███╗█████╗  
+██║╚██╔╝██║██╔══╝  ╚════██║██╔══██║██╔══██╗██╔══██╗██║██║  ██║██║   ██║██╔══╝  
+██║ ╚═╝ ██║███████╗███████║██║  ██║██████╔╝██║  ██║██║██████╔╝╚██████╔╝███████╗
+╚═╝     ╚═╝╚══════╝╚══════╝╚═╝  ╚═╝╚═════╝ ╚═╝  ╚═╝╚═╝╚═════╝  ╚═════╝ ╚══════╝
 """
 
-BRIDGE_SUBTITLE = "WiFi Bridge"
+BRIDGE_SUBTITLE = "Meshbridge"
 BRIDGE_VERSION = "unknown"
 
 
@@ -460,7 +460,17 @@ def _render_client_body(
         text.append(f"\nResponse: {backend_state.client_response}", style="green")
     if backend_state.client_error:
         text.append(f"\nError: {backend_state.client_error}", style="red")
-    if backend_state.client_last_payload:
+    if backend_state.client_last_payload_decoded:
+        decoded_lines = _wrap_payload(backend_state.client_last_payload_decoded, content_width - 8)
+        max_lines = 6
+        ui_state.client_scroll = _clamp_scroll(ui_state.client_scroll, len(decoded_lines), max_lines)
+        start = ui_state.client_scroll
+        end = min(start + max_lines, len(decoded_lines))
+        range_label = f"{start + 1}-{end} of {len(decoded_lines)}"
+        text.append(f"\nPayload ({range_label}):", style="bold cyan")
+        for line in decoded_lines[start:end]:
+            text.append(f"\n{line}", style="green")
+    elif backend_state.client_last_payload:
         payload_lines = _wrap_payload(backend_state.client_last_payload, content_width - 8)
         max_lines = 4
         ui_state.client_scroll = _clamp_scroll(ui_state.client_scroll, len(payload_lines), max_lines)
@@ -624,6 +634,22 @@ def _notice_text(ui_state: UIState, ttl_seconds: float = 3.0) -> str | None:
 
 
 def _copy_to_clipboard(text: str) -> bool:
+    # Prefer PowerShell on Windows for reliable clipboard setting
+    if os.name == "nt":
+        try:
+            import subprocess
+
+            subprocess.run(
+                ["powershell", "-NoProfile", "-Command", "Set-Clipboard", "-Value", text],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return True
+        except Exception:
+            pass
+
+    # Fallback to tkinter clipboard (works on most platforms)
     try:
         import tkinter  # type: ignore
 
@@ -635,22 +661,7 @@ def _copy_to_clipboard(text: str) -> bool:
         root.destroy()
         return True
     except Exception:
-        pass
-
-    try:
-        if os.name == "nt":
-            import subprocess
-
-            subprocess.run(
-                ["powershell", "-NoProfile", "-Command", "Set-Clipboard", "-Value", text],
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            return True
-    except Exception:
         return False
-    return False
 
 
 def _handle_palette_key(key: str, ui_state: UIState, backend: BackendService) -> None:
@@ -693,7 +704,12 @@ def _handle_palette_key(key: str, ui_state: UIState, backend: BackendService) ->
                 _set_notice(ui_state, "Health request sent")
         elif action == "copy":
             snapshot = backend.snapshot()
-            payload = snapshot.client_last_payload or snapshot.client_response
+            payload = (
+                snapshot.client_last_payload_decoded
+                or snapshot.client_last_payload_raw
+                or snapshot.client_last_payload
+                or snapshot.client_response
+            )
             if payload:
                 ok = _copy_to_clipboard(payload)
                 _set_notice(ui_state, "Copied to clipboard" if ok else "Copy failed")
