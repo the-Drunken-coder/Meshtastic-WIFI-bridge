@@ -915,15 +915,15 @@ class MeshWebBrowser:
                     req.status = "error"
                     req.error = f"Request timed out: {e}"
                     req.duration = time.time() - start_time
-        except Exception as e:
-            LOGGER.exception("Error fetching URL")
+        except ValueError as e:
             with self._request_lock:
                 req = self._requests.get(request_id)
                 if req:
                     req.status = "error"
                     req.error = str(e)
                     req.duration = time.time() - start_time
-        except ValueError as e:
+        except Exception as e:
+            LOGGER.exception("Error fetching URL")
             with self._request_lock:
                 req = self._requests.get(request_id)
                 if req:

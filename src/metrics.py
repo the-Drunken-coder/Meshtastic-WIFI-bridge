@@ -5,6 +5,17 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
+__all__ = [
+    "DEFAULT_LATENCY_BUCKETS",
+    "CounterMetric",
+    "GaugeMetric",
+    "HistogramMetric",
+    "MetricsRegistry",
+    "get_metrics_registry",
+    "set_metrics_registry",
+    "start_metrics_http_server",
+]
+
 DEFAULT_LATENCY_BUCKETS: Tuple[float, ...] = (
     0.01,
     0.05,

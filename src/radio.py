@@ -12,6 +12,8 @@ from transport import InMemoryRadio, RadioInterface
 if TYPE_CHECKING:
     from meshtastic import serial_interface
 
+__all__ = ["SerialRadioAdapter", "build_radio"]
+
 LOGGER = logging.getLogger(__name__)
 
 

@@ -18,6 +18,25 @@ import zstandard as zstd
 from dataclasses import dataclass, field
 from typing import Any, Dict
 
+__all__ = [
+    "MessageEnvelope",
+    "chunk_envelope",
+    "parse_chunk",
+    "reconstruct_message",
+    "build_ack_chunk",
+    "build_nack_chunk",
+    "parse_nack_payload",
+    "estimate_chunk_count",
+    "shorten_payload",
+    "expand_payload",
+    "MAGIC",
+    "VERSION",
+    "FLAG_ACK",
+    "FLAG_NACK",
+    "HEADER_SIZE",
+    "SEGMENT_SIZE",
+]
+
 MAGIC = b"MB"
 VERSION = 1
 FLAG_ACK = 0x01

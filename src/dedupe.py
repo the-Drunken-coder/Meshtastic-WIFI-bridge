@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:  # pragma: no cover
     from message import MessageEnvelope
 
+__all__ = ["DedupeKeys", "RequestDeduper", "build_dedupe_keys"]
+
 
 class DedupeKeys(NamedTuple):
     message: Hashable

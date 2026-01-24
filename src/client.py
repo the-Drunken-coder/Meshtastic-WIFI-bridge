@@ -10,6 +10,8 @@ from message import MessageEnvelope, estimate_chunk_count
 from metrics import DEFAULT_LATENCY_BUCKETS, get_metrics_registry
 from transport import MeshtasticTransport
 
+__all__ = ["MeshtasticClient"]
+
 LOGGER = logging.getLogger(__name__)
 BACKOFF_BASE_SECONDS = 0.5
 BACKOFF_JITTER_FACTOR = 0.2
