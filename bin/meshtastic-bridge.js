@@ -186,10 +186,17 @@ if (args[0] === "install-deps") {
 
 function runNpm(args, options = {}) {
   const cli = resolveNpmCli();
-  if (!cli) {
-    return { status: 1, error: new Error("npm CLI not found") };
+  if (cli) {
+    return spawnSync(process.execPath, [cli, ...args], options);
   }
-  return spawnSync(process.execPath, [cli, ...args], options);
+
+  // Fallback: attempt to run npm directly from PATH
+  const npmCmd = resolveNpmCommand();
+  if (npmCmd) {
+    return spawnSync(npmCmd, args, options);
+  }
+
+  return { status: 1, error: new Error("npm CLI not found") };
 }
 
 function resolveNpmCli() {
