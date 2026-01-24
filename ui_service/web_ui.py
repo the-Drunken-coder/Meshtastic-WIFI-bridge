@@ -8,17 +8,15 @@ the mesh network.
 from __future__ import annotations
 
 import base64
-import json
 import logging
 import re
 import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
-from urllib.parse import urljoin, urlparse, urlunparse, parse_qs, urlencode
+from urllib.parse import urlparse
 
-from flask import Flask, Response, request, render_template_string, jsonify, stream_with_context
+from flask import Flask, request, render_template_string, jsonify
 
 import sys
 
@@ -424,19 +422,28 @@ BROWSER_HTML = '''
         }
         
         function showError(title, details) {
+            // Build static structure, fill dynamic content safely via textContent
             mainContent.innerHTML = `
                 <div class="error-screen">
                     <div class="error-icon">&#9888;</div>
-                    <h2 class="error-title">${title}</h2>
-                    <div class="error-details">${details}</div>
+                    <h2 class="error-title"></h2>
+                    <div class="error-details"></div>
                     <button class="retry-button" onclick="retryLastRequest()">Retry</button>
                 </div>
             `;
+            const titleEl = mainContent.querySelector('.error-title');
+            const detailsEl = mainContent.querySelector('.error-details');
+            if (titleEl) {
+                titleEl.textContent = title;
+            }
+            if (detailsEl) {
+                detailsEl.textContent = details;
+            }
         }
         
         function showContent(html, baseUrl) {
             // Create iframe to display content
-            mainContent.innerHTML = '<div class="browser-frame"><iframe id="contentFrame" sandbox="allow-same-origin"></iframe></div>';
+            mainContent.innerHTML = '<div class="browser-frame"><iframe id="contentFrame" sandbox="allow-same-origin allow-scripts"></iframe></div>';
             const iframe = document.getElementById('contentFrame');
             
             // Write content to iframe
@@ -560,7 +567,11 @@ BROWSER_HTML = '''
                         const bytes = data.content_length || 0;
                         const duration = data.duration || 0;
                         setStatus(`Loaded (${formatBytes(bytes)} in ${duration.toFixed(1)}s)`, 'success');
-                        setStats(`${Math.round(bytes/duration)} bytes/sec`);
+                        if (duration > 0) {
+                            setStats(`${Math.round(bytes / duration)} bytes/sec`);
+                        } else {
+                            setStats('Speed: N/A');
+                        }
                         
                         // Display the content
                         if (data.content_html) {
@@ -689,18 +700,35 @@ class MeshWebBrowser:
         
         @self.app.route('/api/browse', methods=['POST'])
         def browse():
-            data = request.get_json()
+            data = request.get_json(silent=True)
+            if not isinstance(data, dict):
+                return jsonify({"error": "Invalid or missing JSON body"}), 400
             url = data.get('url', '').strip()
             
             if not url:
                 return jsonify({"error": "URL is required"}), 400
             
-            # Normalize URL
+            # Validate and normalize URL
+            parsed = urlparse(url)
+            if parsed.scheme and parsed.scheme not in ("http", "https"):
+                return jsonify({"error": "Only http and https URLs are allowed"}), 400
             if not url.startswith(('http://', 'https://')):
                 url = 'https://' + url
             
             # Create request tracking
             with self._request_lock:
+                # Clean up old completed requests (keep last 100)
+                if len(self._requests) > 100:
+                    # Remove oldest completed/error requests
+                    completed = [
+                        (req_id, req) for req_id, req in self._requests.items()
+                        if req.status in ("done", "error")
+                    ]
+                    # Sort by start_time and remove oldest
+                    completed.sort(key=lambda x: x[1].start_time)
+                    for req_id, _ in completed[:len(completed) // 2]:
+                        del self._requests[req_id]
+                
                 self._request_counter += 1
                 request_id = f"req_{self._request_counter}_{int(time.time())}"
                 browse_req = BrowseRequest(request_id=request_id, url=url)
@@ -754,16 +782,28 @@ class MeshWebBrowser:
     
     def _ensure_client(self) -> MeshtasticClient:
         """Ensure we have a working client connection."""
+        # Fast path without locking if the client is already initialized.
         if self._client is not None:
             return self._client
-        
-        if self._transport is None:
-            # Build our own radio/transport
-            self._radio = build_radio(False, self._radio_port, "web_browser")
-            self._transport = MeshtasticTransport(self._radio)
-        
-        self._client = MeshtasticClient(self._transport, self.gateway_node_id)
-        return self._client
+
+        # Lazily create a dedicated lock for client initialization.
+        # A race on creating this attribute is harmless; all threads
+        # will refer to some Lock instance, and Lock itself is thread-safe.
+        if not hasattr(self, "_client_lock"):
+            self._client_lock = threading.Lock()
+
+        # Double-checked locking to avoid initializing the client multiple times.
+        with self._client_lock:
+            if self._client is not None:
+                return self._client
+
+            if self._transport is None:
+                # Build our own radio/transport
+                self._radio = build_radio(False, self._radio_port, "web_browser")
+                self._transport = MeshtasticTransport(self._radio)
+
+            self._client = MeshtasticClient(self._transport, self.gateway_node_id)
+            return self._client
     
     def _fetch_url(self, request_id: str) -> None:
         """Fetch a URL over the mesh network."""
@@ -860,11 +900,15 @@ class MeshWebBrowser:
     
     def _rewrite_html(self, html: str, base_url: str) -> str:
         """Rewrite HTML to make relative URLs absolute."""
+        # Escape base_url to prevent XSS via HTML attribute injection
+        import html as html_module
+        escaped_base_url = html_module.escape(base_url, quote=True)
+        
         # Add base tag for relative URLs
         if '<head' in html.lower():
             html = re.sub(
                 r'(<head[^>]*>)',
-                rf'\1<base href="{base_url}">',
+                rf'\1<base href="{escaped_base_url}">',
                 html,
                 count=1,
                 flags=re.IGNORECASE
@@ -872,13 +916,13 @@ class MeshWebBrowser:
         elif '<html' in html.lower():
             html = re.sub(
                 r'(<html[^>]*>)',
-                rf'\1<head><base href="{base_url}"></head>',
+                rf'\1<head><base href="{escaped_base_url}"></head>',
                 html,
                 count=1,
                 flags=re.IGNORECASE
             )
         else:
-            html = f'<head><base href="{base_url}"></head>' + html
+            html = f'<head><base href="{escaped_base_url}"></head>' + html
         
         return html
     
@@ -906,7 +950,14 @@ class MeshWebBrowser:
         return thread
     
     def shutdown(self) -> None:
-        """Clean up resources."""
+        """Clean up resources for the web browser.
+
+        Note: This method only closes the underlying radio connection. It does
+        not stop the Flask development server started by ``run()`` or
+        ``run_threaded()``. The Flask server lifecycle is managed by the
+        caller (for example, via KeyboardInterrupt in ``main()`` or by process
+        termination when using a daemon thread).
+        """
         if self._radio and hasattr(self._radio, "close"):
             self._radio.close()
 
