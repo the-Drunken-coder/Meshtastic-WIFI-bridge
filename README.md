@@ -14,6 +14,7 @@ ACK/NACK reliability strategies, deduplication, and optional spooling.
 - In-memory radio for local simulation/testing
 - Hardware harness for manual testing with real radios
 - Interactive TUI with command palette for radio and mode selection
+- **Web browser UI** for browsing websites over the mesh network
 - Port accessibility detection to verify radio connections
 - JSON-based mode configuration for transport parameters
 
@@ -67,6 +68,43 @@ Transport modes are defined in JSON files in the `modes/` directory. Each mode c
 
 Create custom modes by adding new JSON files to the `modes/` directory.
 
+## Web Browser
+
+When you select **Open Client** in the TUI, a web browser server automatically starts on `http://127.0.0.1:8080`. This allows you to browse websites over your Meshtastic mesh network.
+
+### How it works
+
+1. Run `meshbridge` and select **Open Client**
+2. Enter the Gateway Node ID in the TUI
+3. Open `http://127.0.0.1:8080` in your web browser
+4. Enter any URL (e.g., `example.com`) in the search bar
+5. The page is fetched through the gateway over the mesh and displayed
+
+### Features
+
+- Real-time progress tracking with chunk counts and ETA
+- Automatic URL normalization (adds `https://` if missing)
+- Relative link handling via `<base>` tag injection
+- Click-through navigation (links are fetched through the mesh)
+- Works best with simple, text-based websites
+
+### Standalone Usage
+
+You can also run the web browser directly without the TUI:
+
+```bash
+python ui_service/web_ui.py --gateway-node-id !abcd1234
+```
+
+Or via the CLI:
+
+```bash
+python scripts/cli.py \
+  --mode client \
+  --gateway-node-id !abcd1234 \
+  --web-browser
+```
+
 ## Quick start (simulated radios)
 
 Terminal 1 - start a gateway:
@@ -115,6 +153,9 @@ python tools/hardware_harness/dual_radio_harness.py
 | `--timeout` | Client request timeout in seconds (default: 5). |
 | `--spool-path` | Path for persistent outgoing message spool. |
 | `--log-level` | Logging level (default: `INFO`). |
+| `--web-browser` | Start web browser UI for browsing over mesh (client mode). |
+| `--web-host` | Host for web browser UI (default: `127.0.0.1`). |
+| `--web-port` | Port for web browser UI (default: `8080`). |
 
 ## Notes
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
 import sys
@@ -21,7 +22,9 @@ from rich.live import Live
 from rich.style import Style
 
 from backend_service import BackendService, BackendState
+from web_ui import MeshWebBrowser
 
+LOGGER = logging.getLogger(__name__)
 
 MESHTASTIC_LOGO = """
 ███╗   ███╗███████╗███████╗██╗  ██╗██████╗ ██████╗ ██╗██████╗  ██████╗ ███████╗
@@ -161,6 +164,10 @@ class UIState:
     palette_open: bool = False
     palette_index: int = 0
     palette_options: list[dict] = None  # type: ignore[assignment]
+    # Web browser state
+    web_browser: MeshWebBrowser | None = None
+    web_browser_port: int = 8080
+    web_browser_started: bool = False
 
 
 MENU_OPTIONS = ["Open Client", "Start Gateway"]
@@ -415,6 +422,14 @@ def _render_client_body(
 ) -> Text:
     text = Text()
     text.append("Client Mode\n\n", style="bold cyan")
+    
+    # Show web browser info if started
+    if ui_state.web_browser_started:
+        text.append("Web Browser: ", style="bold cyan")
+        browser_url = f"http://127.0.0.1:{ui_state.web_browser_port}"
+        text.append(browser_url, style="bold green underline")
+        text.append("\n", style="dim")
+    
     text.append("Connected Radio: ", style="bold cyan")
     if backend_state.radio_ports:
         text.append(backend_state.radio_ports[0], style="green")
@@ -756,10 +771,7 @@ def _render_footer(ui_state: UIState) -> Text:
         text.append(" to submit", style="dim")
         text.append(", ", style="dim")
         text.append("Esc", style="bold white")
-        text.append(" to menu", style="dim")
-        text.append(", ", style="dim")
-        text.append("PgUp/PgDn", style="bold white")
-        text.append(" to scroll", style="dim")
+        text.append(" menu", style="dim")
     text.append(" | ", style="dim")
     text.append("Ctrl+P for commands", style="dim")
     text.append(" | ", style="dim")
@@ -792,6 +804,70 @@ def _handle_key(key: str, ui_state: UIState, backend: BackendService) -> None:
         _handle_client_key(key, ui_state, backend)
 
 
+def _start_web_browser(ui_state: UIState, backend: BackendService) -> None:
+    """Start the web browser server for client mode."""
+    if ui_state.web_browser_started:
+        return
+    
+    # The web browser must reuse the backend's transport; if it is not
+    # available yet, we should not start the browser to avoid creating a
+    # second, conflicting radio connection.
+    transport = getattr(backend, "_transport", None)
+    if transport is None:
+        # Backend transport not ready; skip starting the web browser for now.
+        # This can be retried later once the backend has established its
+        # transport.
+        LOGGER.debug("Web UI not started: backend transport is not available.")
+        return
+    
+    # Find an available port
+    import socket
+    port = ui_state.web_browser_port
+    port_found = False
+    for try_port in range(port, port + 10):
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.bind(('127.0.0.1', try_port))
+            sock.close()
+            port = try_port
+            port_found = True
+            break
+        except OSError:
+            continue
+    
+    if not port_found:
+        LOGGER.error(f"Could not find available port in range {ui_state.web_browser_port}-{ui_state.web_browser_port + 9}")
+        return
+    
+    ui_state.web_browser_port = port
+    
+    # Create and start the web browser using the backend's existing transport
+    ui_state.web_browser = MeshWebBrowser(
+        gateway_node_id=ui_state.client_gateway_id or "!unknown",
+        transport=transport,
+        host="127.0.0.1",
+        port=port,
+    )
+    
+    # Start in background thread
+    ui_state.web_browser.run_threaded()
+    ui_state.web_browser_started = True
+
+
+def _stop_web_browser(ui_state: UIState) -> None:
+    """Stop the web browser server."""
+    if ui_state.web_browser:
+        ui_state.web_browser.shutdown()
+        ui_state.web_browser = None
+    ui_state.web_browser_started = False
+
+
+def _update_web_browser_gateway(ui_state: UIState, gateway_id: str) -> None:
+    """Update the gateway ID for the web browser."""
+    if ui_state.web_browser:
+        ui_state.web_browser.gateway_node_id = gateway_id
+
+
 def _handle_menu_key(key: str, ui_state: UIState, backend: BackendService) -> None:
     if key == "up":
         ui_state.menu_index = (ui_state.menu_index - 1) % len(MENU_OPTIONS)
@@ -802,16 +878,20 @@ def _handle_menu_key(key: str, ui_state: UIState, backend: BackendService) -> No
             return
         selection = MENU_OPTIONS[ui_state.menu_index]
         if selection == "Start Gateway":
+            _stop_web_browser(ui_state)  # Stop web browser if switching to gateway
             backend.start_gateway()
             ui_state.view = "gateway"
         elif selection == "Open Client":
             backend.stop_gateway()
             ui_state.view = "client"
             ui_state.client_active_field = 0
+            # Start web browser when entering client mode
+            _start_web_browser(ui_state, backend)
 
 
 def _handle_client_key(key: str, ui_state: UIState, backend: BackendService) -> None:
     if key in {"esc", "q"}:
+        _stop_web_browser(ui_state)  # Stop web browser when leaving client mode
         ui_state.view = "menu"
         return
     if key == "pgup":
@@ -825,9 +905,13 @@ def _handle_client_key(key: str, ui_state: UIState, backend: BackendService) -> 
         return
     if key == "enter":
         if ui_state.client_active_field == 0:
+            # Update web browser gateway ID when user finishes entering it
+            _update_web_browser_gateway(ui_state, ui_state.client_gateway_id.strip())
             ui_state.client_active_field = 1
             return
         if ui_state.client_gateway_id and ui_state.client_url:
+            # Also update gateway ID before sending
+            _update_web_browser_gateway(ui_state, ui_state.client_gateway_id.strip())
             backend.send_http_request(
                 ui_state.client_gateway_id.strip(),
                 ui_state.client_url.strip(),
@@ -875,6 +959,7 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        _stop_web_browser(ui_state)  # Clean up web browser
         key_reader.stop()
         backend.stop()
         console.show_cursor(True)
