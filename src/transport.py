@@ -77,6 +77,10 @@ MIN_SEGMENT_SIZE = 50  # Minimum segment size to avoid over-reduction
 SEGMENT_SIZE_REDUCTION = 50  # Bytes to reduce when chunk size exceeds limit
 logger = logging.getLogger(__name__)
 
+# Pre-created label dicts for common metrics (avoid dict creation on every call)
+_LABELS_CHUNKS_INBOUND = {"direction": "inbound", "command": "unknown"}
+_LABELS_CHUNKS_OUTBOUND_NACK = {"direction": "outbound", "command": "nack_resend"}
+
 
 class MeshtasticTransport:
     """Optimized transport layer for Meshtastic communication with application-level ACKs.
@@ -163,6 +167,12 @@ class MeshtasticTransport:
         # Internal state for non-blocking transport
         self._active_chunks: Dict[str, List[bytes]] = {}
         self._active_progress: Dict[str, int] = {}
+        
+        # Periodic cleanup state (avoid O(n) scan on every operation)
+        self._last_cleanup_time: float = 0.0
+        self._cleanup_interval: float = 10.0  # Cleanup every 10 seconds max
+        self._cleanup_counter: int = 0
+        self._cleanup_every_n: int = 50  # Or every 50 operations
         
         self._record_spool_depth()
 
@@ -421,12 +431,31 @@ class MeshtasticTransport:
             timestamp=now,
             is_ack=is_ack,
         )
+        # Periodic cleanup instead of every call (O(n) -> amortized O(1))
+        self._maybe_cleanup_progress(now)
+
+    def _maybe_cleanup_progress(self, now: float) -> None:
+        """Cleanup stale progress entries periodically, not on every call."""
+        self._cleanup_counter += 1
+        time_since_cleanup = now - self._last_cleanup_time
+        
+        # Cleanup if enough time passed OR enough operations occurred
+        if time_since_cleanup < self._cleanup_interval and self._cleanup_counter < self._cleanup_every_n:
+            return
+        
+        self._cleanup_counter = 0
+        self._last_cleanup_time = now
         cutoff = now - self._progress_ttl
+        
+        # Cleanup progress dict
         stale_ids = [
             key for key, progress in self._last_progress.items() if progress.timestamp < cutoff
         ]
         for key in stale_ids:
             del self._last_progress[key]
+        
+        # Also cleanup chunk cache while we're at it
+        self._prune_chunk_cache(now)
 
     def receive_message(
         self, timeout: float = 0.5
@@ -434,7 +463,7 @@ class MeshtasticTransport:
         """Receive and reassemble chunked messages."""
 
         receive_start = time.time()
-        deadline = time.time() + timeout
+        deadline = receive_start + timeout
         chunks_received = 0
 
         while time.time() <= deadline:
@@ -442,10 +471,13 @@ class MeshtasticTransport:
             if remaining <= 0:
                 break
 
-            receive_timeout = max(0.1, min(remaining, 0.5))
+            receive_timeout = max(0.05, min(remaining, 0.5))
             received = self.radio.receive(receive_timeout)
             if received is None:
-                time.sleep(0.01)  # Prevent CPU spinning
+                # Reduced sleep: 2ms when actively receiving, longer otherwise
+                # This balances latency vs CPU usage
+                sleep_time = 0.002 if chunks_received > 0 else 0.005
+                time.sleep(sleep_time)
                 continue
 
             chunks_received += 1
@@ -471,7 +503,7 @@ class MeshtasticTransport:
                 )
                 self._metrics.inc(
                     "transport_chunks_total",
-                    labels={"direction": "inbound", "command": "unknown"},
+                    labels=_LABELS_CHUNKS_INBOUND,
                 )
             except ValueError as e:
                 logger.warning("[TRANSPORT] Failed to parse chunk: %s", e)
@@ -542,7 +574,7 @@ class MeshtasticTransport:
 
     def _handle_nack(self, sender: str, message_prefix: str, missing: List[int]) -> None:
         """Resend only the requested chunks when a NACK is received."""
-        self._prune_chunk_cache()
+        # Note: chunk cache is now pruned periodically via _maybe_cleanup_progress
         cache = self._chunk_cache.get(message_prefix)
         if not cache:
             logger.debug(
@@ -565,7 +597,7 @@ class MeshtasticTransport:
                 self._inc_sent_chunks(message_prefix)
                 self._metrics.inc(
                     "transport_chunks_total",
-                    labels={"direction": "outbound", "command": "nack_resend"},
+                    labels=_LABELS_CHUNKS_OUTBOUND_NACK,
                 )
                 time.sleep(RETRY_CHUNK_DELAY)
             except Exception:

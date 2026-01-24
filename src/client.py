@@ -6,7 +6,7 @@ import time
 import uuid
 from typing import Any, Callable, Dict, Optional
 
-from message import MessageEnvelope, chunk_envelope
+from message import MessageEnvelope, estimate_chunk_count
 from metrics import DEFAULT_LATENCY_BUCKETS, get_metrics_registry
 from transport import MeshtasticTransport
 
@@ -108,7 +108,8 @@ class MeshtasticClient:
 
         data_size = len(str(data or {}).encode("utf-8"))
         try:
-            total_chunks = len(list(chunk_envelope(envelope, self.transport.segment_size)))
+            # Use estimate_chunk_count instead of building all chunks (faster)
+            total_chunks = estimate_chunk_count(envelope, self.transport.segment_size)
         except Exception:
             total_chunks = 0
         LOGGER.info(

@@ -107,10 +107,28 @@ class PersistentSpool:
             self._flush()
 
     def ack(self, message_id: str) -> None:
+        """Acknowledge and remove a message from the spool.
+        
+        Supports both exact match and prefix match (for 8-byte truncated IDs from ACKs).
+        """
         with self._lock:
+            # Try exact match first
             if message_id in self._entries:
                 del self._entries[message_id]
                 self._flush()
+                return
+            
+            # Try prefix match (for truncated ACK IDs)
+            # This handles the case where ACK contains only 8-byte prefix
+            if len(message_id) == 8:
+                matching = [
+                    full_id for full_id in self._entries 
+                    if full_id.startswith(message_id)
+                ]
+                if len(matching) == 1:
+                    # Unique prefix match - safe to remove
+                    del self._entries[matching[0]]
+                    self._flush()
 
     def touch(self, message_id: str) -> None:
         """Refresh last_activity without changing retry state.

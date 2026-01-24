@@ -30,9 +30,19 @@ HEADER_SIZE = HEADER_STRUCT.size
 # payload. Our 16-byte chunk header is inside the payload, so keep chunks well under
 # the ~240-byte usable payload limit for safety.
 SEGMENT_SIZE = 100
-# Use mid-range Zstandard compression level to balance CPU cost and compression ratio
-_COMPRESSOR = zstd.ZstdCompressor(level=4)
+
+# Adaptive compression: use different levels based on payload size
+# Small payloads: fast compression (overhead may exceed savings)
+# Medium payloads: balanced compression
+# Large payloads: better compression (worth the CPU cost)
+_COMPRESSOR_FAST = zstd.ZstdCompressor(level=1)  # For payloads < 200 bytes
+_COMPRESSOR_DEFAULT = zstd.ZstdCompressor(level=3)  # For payloads 200-1000 bytes
+_COMPRESSOR_THOROUGH = zstd.ZstdCompressor(level=5)  # For payloads > 1000 bytes
 _DECOMPRESSOR = zstd.ZstdDecompressor()
+
+# Thresholds for adaptive compression
+_COMPRESSION_THRESHOLD_FAST = 200  # bytes
+_COMPRESSION_THRESHOLD_THOROUGH = 1000  # bytes
 ALIAS_MAP: Dict[str, str] = {}
 REVERSE_ALIAS_MAP: Dict[str, str] = {v: k for k, v in ALIAS_MAP.items()}
 
@@ -61,14 +71,20 @@ class MessageEnvelope:
     data: Dict[str, Any] | None = None
     meta: Dict[str, Any] = field(default_factory=dict)
 
+    DEFAULT_PRIORITY = 10  # Class constant for default priority
+
     def to_dict(self) -> Dict[str, Any]:
-        envelope = {
+        envelope: Dict[str, Any] = {
             "id": self.id,
             "type": self.type,
             "command": self.command,
-            "priority": self.priority,
-            "data": self.data or {},
         }
+        # Only include priority if non-default (saves 2-3 bytes)
+        if self.priority != self.DEFAULT_PRIORITY:
+            envelope["priority"] = self.priority
+        # Only include data if non-empty (saves 2-3 bytes)
+        if self.data:
+            envelope["data"] = self.data
         if self.meta:
             envelope["meta"] = self.meta
         if self.correlation_id is not None:
@@ -120,6 +136,15 @@ def expand_payload(payload: Any) -> Any:
     return _alias_payload(payload, encode=False)
 
 
+def _select_compressor(payload_size: int) -> zstd.ZstdCompressor:
+    """Select compression level based on payload size for optimal speed/ratio tradeoff."""
+    if payload_size < _COMPRESSION_THRESHOLD_FAST:
+        return _COMPRESSOR_FAST
+    elif payload_size > _COMPRESSION_THRESHOLD_THOROUGH:
+        return _COMPRESSOR_THOROUGH
+    return _COMPRESSOR_DEFAULT
+
+
 def _encode_payload(envelope: MessageEnvelope) -> bytes:
     """Encode envelope as compressed binary payload with scoped aliasing."""
     # 1. Start with raw dict
@@ -135,7 +160,9 @@ def _encode_payload(envelope: MessageEnvelope) -> bytes:
         aliased[ENVELOPE_ALIAS_MAP.get(k, k)] = v
         
     payload = msgpack.packb(aliased, use_bin_type=True)
-    return _COMPRESSOR.compress(payload)
+    # Use adaptive compression based on payload size
+    compressor = _select_compressor(len(payload))
+    return compressor.compress(payload)
 
 
 def _decode_payload(encoded: bytes) -> Dict[str, Any]:
@@ -153,6 +180,14 @@ def _decode_payload(encoded: bytes) -> Dict[str, Any]:
         envelope_dict["data"] = _alias_payload(envelope_dict["data"], encode=False)
         
     return envelope_dict
+
+
+def estimate_chunk_count(envelope: MessageEnvelope, segment_size: int = SEGMENT_SIZE) -> int:
+    """Estimate the number of chunks without building them (faster for progress display)."""
+    encoded = _encode_payload(envelope)
+    if not encoded:
+        return 0
+    return math.ceil(len(encoded) / segment_size)
 
 
 def chunk_envelope(
@@ -176,30 +211,187 @@ def chunk_envelope(
     return chunks
 
 
-def build_ack_chunk(ack_id: str) -> bytes:
-    # Encode ACK ID as UTF-8 for payload
-    payload = ack_id.encode("utf-8")
-    # Encode and truncate ID prefix for header
-    short_id_bytes = ack_id.encode("utf-8")[:8]
+def build_ack_chunk(ack_id: str, include_payload: bool = True) -> bytes:
+    """Build an ACK chunk.
+    
+    Args:
+        ack_id: The message ID or control message (e.g., "bitmap_req|msg_id")
+        include_payload: If False, omit payload for simple ACKs (saves ~12 bytes).
+                        Control messages (containing "|") always include payload.
+    """
+    # Control messages (with |) must include payload for parsing
+    is_control = "|" in ack_id
+    # Encode and truncate ID suffix for header (use last segment after |, e.g. message/chunk ID)
+    id_for_header = ack_id.split("|")[-1] if is_control else ack_id
+    short_id_bytes = id_for_header.encode("utf-8")[:8]
     short_id = short_id_bytes.ljust(8, b"\x00")
     header = HEADER_STRUCT.pack(MAGIC, VERSION, FLAG_ACK, short_id, 1, 1)
-    return header + payload
+    
+    # Include payload for control messages or when explicitly requested
+    if is_control or include_payload:
+        payload = ack_id.encode("utf-8")
+        return header + payload
+    # Simple ACK: empty payload (header already has 8-byte ID prefix)
+    return header
+
+
+def _encode_rle_sequences(seqs: List[int]) -> bytes:
+    """Encode sequences using run-length encoding for consecutive runs.
+    
+    Format: [count][entries...]
+    Each entry is either:
+    - Single: 0x00 + uint16 (3 bytes) - single sequence number
+    - Range:  0x01 + uint16 start + uint16 end (5 bytes) - inclusive range
+    
+    For runs of 3+ consecutive numbers, range encoding saves bytes.
+    Example: [5,6,7,8,9] as range = 5 bytes vs individual = 15 bytes
+    """
+    if not seqs:
+        return bytes([0])
+    
+    seqs = sorted(set(seqs))  # Dedupe and sort
+    entries: List[bytes] = []
+    i = 0
+    
+    while i < len(seqs):
+        # Find consecutive run starting at i
+        run_start = seqs[i]
+        run_end = run_start
+        j = i + 1
+        while j < len(seqs) and seqs[j] == run_end + 1:
+            run_end = seqs[j]
+            j += 1
+        
+        run_length = run_end - run_start + 1
+        
+        if run_length >= 3:
+            # Range encoding: 5 bytes for any run of 3+
+            entries.append(b'\x01' + struct.pack("!HH", run_start, run_end))
+            i = j
+        else:
+            # Single encoding: 3 bytes each
+            entries.append(b'\x00' + struct.pack("!H", run_start))
+            i += 1
+    
+    # Limit total entries to fit in payload
+    entry_count = min(len(entries), 127)  # 7-bit count
+    return bytes([entry_count]) + b"".join(entries[:entry_count])
+
+
+def _decode_rle_sequences(payload: bytes) -> List[int]:
+    """Decode RLE-encoded sequences back to a list."""
+    if not payload or payload[0] == 0:
+        return []
+    
+    count = payload[0] & 0x7F
+    seqs: List[int] = []
+    offset = 1
+    
+    for _ in range(count):
+        if offset >= len(payload):
+            break
+        
+        entry_type = payload[offset]
+        offset += 1
+        
+        if entry_type == 0x00:
+            # Single sequence
+            if offset + 2 > len(payload):
+                break
+            seq = struct.unpack("!H", payload[offset:offset+2])[0]
+            seqs.append(seq)
+            offset += 2
+        elif entry_type == 0x01:
+            # Range
+            if offset + 4 > len(payload):
+                break
+            start, end = struct.unpack("!HH", payload[offset:offset+4])
+            seqs.extend(range(start, end + 1))
+            offset += 4
+        else:
+            # Unknown entry type, skip
+            break
+    
+    return seqs
 
 
 def build_nack_chunk(message_prefix: str, missing_seqs: List[int]) -> bytes:
-    """Build a compact NACK chunk listing missing sequence numbers."""
+    """Build a compact NACK chunk listing missing sequence numbers.
+    
+    Uses run-length encoding for consecutive sequences to reduce payload size.
+    Example: [5,6,7,8,9,15,16] encodes as 1 range + 2 singles = 11 bytes
+             vs 7 singles = 21 bytes (traditional encoding)
+    """
     short_id_bytes = message_prefix.encode("utf-8")[:8]
     short_id = short_id_bytes.ljust(8, b"\x00")
-    # Limit to 255 entries to keep payload small
-    seqs = [min(max(1, int(seq)), 65535) for seq in missing_seqs][:255]
-    payload = bytes([len(seqs)]) + b"".join(struct.pack("!H", seq) for seq in seqs)
+    
+    # Clamp sequences to valid range
+    seqs = [min(max(1, int(seq)), 65535) for seq in missing_seqs]
+    
+    # Use RLE encoding for better efficiency with consecutive sequences
+    payload = _encode_rle_sequences(seqs)
     header = HEADER_STRUCT.pack(MAGIC, VERSION, FLAG_NACK, short_id, 1, 1)
     return header + payload
 
 
+def _is_rle_format(payload: bytes) -> bool:
+    """Check if payload is in RLE format by validating its structure.
+    
+    RLE format: [count][entries...] where each entry is:
+    - 0x00 + uint16 (single) or 0x01 + uint16 + uint16 (range)
+    
+    Returns True if the payload structure is consistent with RLE format.
+    """
+    if len(payload) < 1:
+        return False
+    
+    count = payload[0] & 0x7F
+    if count == 0:
+        return len(payload) == 1  # Empty RLE should have only count byte
+    
+    if len(payload) < 2:
+        return False
+    
+    offset = 1
+    entries_found = 0
+    
+    # Try to parse as RLE and see if it's structurally consistent
+    while offset < len(payload) and entries_found < count:
+        if offset >= len(payload):
+            return False  # Truncated
+        
+        entry_type = payload[offset]
+        
+        if entry_type == 0x00:
+            # Single: needs 2 more bytes
+            if offset + 3 > len(payload):
+                return False
+            offset += 3
+            entries_found += 1
+        elif entry_type == 0x01:
+            # Range: needs 4 more bytes
+            if offset + 5 > len(payload):
+                return False
+            offset += 5
+            entries_found += 1
+        else:
+            # Invalid entry type for RLE
+            return False
+    
+    # Valid RLE should consume all bytes and find exactly 'count' entries
+    return entries_found == count and offset == len(payload)
+
+
 def parse_nack_payload(payload: bytes) -> List[int]:
+    """Parse NACK payload, supporting both legacy and RLE formats."""
     if not payload:
         return []
+    
+    # Use structural validation to detect RLE format
+    if _is_rle_format(payload):
+        return _decode_rle_sequences(payload)
+    
+    # Legacy format: count + uint16 entries
     count = payload[0]
     seqs: List[int] = []
     for idx in range(count):
