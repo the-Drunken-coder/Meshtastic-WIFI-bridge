@@ -67,6 +67,10 @@ BROWSER_HTML = '''
             --success-green: #44ff88;
         }
         
+        html, body {
+            height: 100%;
+        }
+        
         body {
             font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
             background: var(--bg-dark);
@@ -174,6 +178,7 @@ BROWSER_HTML = '''
         
         .main-content {
             flex: 1;
+            min-height: 0;
             display: flex;
             flex-direction: column;
             overflow: hidden;
@@ -236,6 +241,7 @@ BROWSER_HTML = '''
         
         .browser-frame {
             flex: 1;
+            min-height: 0;
             background: white;
             margin: 0;
             overflow: auto;
@@ -244,6 +250,7 @@ BROWSER_HTML = '''
         .browser-frame iframe {
             width: 100%;
             height: 100%;
+            display: block;
             border: none;
         }
         
@@ -705,6 +712,9 @@ class MeshWebBrowser:
         
         @self.app.route('/api/browse', methods=['POST'])
         def browse():
+            if not self._is_gateway_id_valid():
+                return jsonify({"error": "Gateway ID not set. Enter a valid gateway ID in the terminal UI first."}), 400
+
             data = request.get_json(silent=True)
             if not isinstance(data, dict):
                 return jsonify({"error": "Invalid or missing JSON body"}), 400
@@ -799,6 +809,9 @@ class MeshWebBrowser:
     
     def _ensure_client(self) -> MeshtasticClient:
         """Ensure we have a working client connection."""
+        if not self._is_gateway_id_valid():
+            raise ValueError("Gateway ID not set or invalid; set it in the terminal UI before browsing.")
+
         # Fast path without locking if the client is already initialized.
         # This is thread-safe because _client is only set once (never reset to None).
         # Reading object references in Python is atomic.
@@ -910,6 +923,13 @@ class MeshWebBrowser:
                     req.status = "error"
                     req.error = str(e)
                     req.duration = time.time() - start_time
+        except ValueError as e:
+            with self._request_lock:
+                req = self._requests.get(request_id)
+                if req:
+                    req.status = "error"
+                    req.error = str(e)
+                    req.duration = time.time() - start_time
     
     def _rewrite_html(self, html_content: str, base_url: str) -> str:
         """Rewrite HTML to make relative URLs absolute."""
@@ -972,6 +992,15 @@ class MeshWebBrowser:
         """
         if self._radio and hasattr(self._radio, "close"):
             self._radio.close()
+
+    def _is_gateway_id_valid(self) -> bool:
+        """Return True if gateway_node_id looks like a valid hex node id."""
+        if not self.gateway_node_id:
+            return False
+        gid = self.gateway_node_id.strip()
+        if gid.lower() in {"unknown", "!unknown"}:
+            return False
+        return bool(re.fullmatch(r"!?[0-9a-fA-F]+", gid))
 
 
 def main():
