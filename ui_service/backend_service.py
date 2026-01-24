@@ -176,7 +176,9 @@ class BackendService:
         self._preferred_port: str | None = None
         self._mode_name: str = "general"
         self._mode_config: dict = _load_mode_config(self._mode_name)
-        # Cache for port accessibility probing
+        # Cache for port accessibility probing to avoid expensive I/O on every poll.
+        # TTL of 30 seconds balances responsiveness with performance - allows detecting
+        # new ports within reasonable time while avoiding excessive serial port probing.
         self._last_ports: list[str] = []
         self._last_accessible: list[str] = []
         self._last_probe_time: float = 0.0
