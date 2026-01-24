@@ -1,6 +1,6 @@
 {
   "name": "meshtastic-bridge",
-  "version": "0.1.19",
+  "version": "0.1.20",
   "description": "Meshtastic bridge CLI for reliable chunked transport.",
   "license": "MIT",
   "type": "commonjs",
