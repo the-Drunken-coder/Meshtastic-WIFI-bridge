@@ -221,7 +221,7 @@ def build_ack_chunk(ack_id: str, include_payload: bool = True) -> bytes:
     """
     # Control messages (with |) must include payload for parsing
     is_control = "|" in ack_id
-    # Encode and truncate ID prefix for header (use part before | for control messages)
+    # Encode and truncate ID suffix for header (use last segment after |, e.g. message/chunk ID)
     id_for_header = ack_id.split("|")[-1] if is_control else ack_id
     short_id_bytes = id_for_header.encode("utf-8")[:8]
     short_id = short_id_bytes.ljust(8, b"\x00")
@@ -334,14 +334,58 @@ def build_nack_chunk(message_prefix: str, missing_seqs: List[int]) -> bytes:
     return header + payload
 
 
+def _is_rle_format(payload: bytes) -> bool:
+    """Check if payload is in RLE format by validating its structure.
+    
+    RLE format: [count][entries...] where each entry is:
+    - 0x00 + uint16 (single) or 0x01 + uint16 + uint16 (range)
+    
+    Returns True if the payload structure is consistent with RLE format.
+    """
+    if len(payload) < 2:
+        return False
+    
+    count = payload[0] & 0x7F
+    if count == 0:
+        return True  # Empty RLE is valid
+    
+    offset = 1
+    entries_found = 0
+    
+    # Try to parse as RLE and see if it's structurally consistent
+    while offset < len(payload) and entries_found < count:
+        if offset >= len(payload):
+            return False  # Truncated
+        
+        entry_type = payload[offset]
+        
+        if entry_type == 0x00:
+            # Single: needs 2 more bytes
+            if offset + 3 > len(payload):
+                return False
+            offset += 3
+            entries_found += 1
+        elif entry_type == 0x01:
+            # Range: needs 4 more bytes
+            if offset + 5 > len(payload):
+                return False
+            offset += 5
+            entries_found += 1
+        else:
+            # Invalid entry type for RLE
+            return False
+    
+    # Valid RLE should consume all bytes and find exactly 'count' entries
+    return entries_found == count
+
+
 def parse_nack_payload(payload: bytes) -> List[int]:
     """Parse NACK payload, supporting both legacy and RLE formats."""
     if not payload:
         return []
     
-    # Detect format: legacy starts with count, RLE entries start with 0x00 or 0x01
-    # If second byte is 0x00 or 0x01, it's RLE format
-    if len(payload) >= 2 and payload[1] in (0x00, 0x01):
+    # Use structural validation to detect RLE format
+    if _is_rle_format(payload):
         return _decode_rle_sequences(payload)
     
     # Legacy format: count + uint16 entries
