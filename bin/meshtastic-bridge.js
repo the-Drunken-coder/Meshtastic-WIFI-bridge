@@ -151,15 +151,45 @@ if (args[0] === "update") {
 }
 
 function runNpm(args, options = {}) {
-  const npmCmd = resolveNpmCommand();
-  if (process.platform === "win32" && npmCmd.toLowerCase().endsWith(".cmd")) {
-    const quotedArgs = args
-      .map((arg) => `"${String(arg).replace(/"/g, '""')}"`)
-      .join(" ");
-    const cmdLine = `""${npmCmd}" ${quotedArgs}`.trim();
-    return spawnSync("cmd.exe", ["/d", "/s", "/c", cmdLine], options);
+  const cli = resolveNpmCli();
+  if (!cli) {
+    return { status: 1, error: new Error("npm CLI not found") };
   }
-  return spawnSync(npmCmd, args, options);
+  return spawnSync(process.execPath, [cli, ...args], options);
+}
+
+function resolveNpmCli() {
+  const execPath = process.env.npm_execpath;
+  if (execPath && fs.existsSync(execPath) && execPath.includes("npm-cli")) {
+    return execPath;
+  }
+  try {
+    const cli = require.resolve("npm/bin/npm-cli.js");
+    if (cli && fs.existsSync(cli)) {
+      return cli;
+    }
+  } catch (_) {
+    /* ignore */
+  }
+  try {
+    const cli = require.resolve("npm/bin/npm-cli.cjs");
+    if (cli && fs.existsSync(cli)) {
+      return cli;
+    }
+  } catch (_) {
+    /* ignore */
+  }
+  // Last resort: guess common install locations
+  const guesses = [
+    path.join(process.execPath, "..", "node_modules", "npm", "bin", "npm-cli.js"),
+    path.join(process.execPath, "..", "node_modules", "npm", "bin", "npm-cli.cjs"),
+  ];
+  for (const guess of guesses) {
+    if (fs.existsSync(guess)) {
+      return guess;
+    }
+  }
+  return null;
 }
 
 const python = resolvePython();
