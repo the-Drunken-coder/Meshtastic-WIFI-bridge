@@ -191,12 +191,19 @@ function runNpm(args, options = {}) {
   }
 
   // Fallback: attempt to run npm directly from PATH
-  const npmCmd = resolveNpmCommand();
-  if (npmCmd) {
-    return spawnSync(npmCmd, args, options);
+  // On Unix-like systems, npm should be in the same bin directory as node
+  const nodeDir = path.dirname(process.execPath);
+  const npmInNodeDir = path.join(nodeDir, "npm");
+  if (process.platform !== "win32" && fs.existsSync(npmInNodeDir)) {
+    return spawnSync(npmInNodeDir, args, options);
   }
 
-  return { status: 1, error: new Error("npm CLI not found") };
+  const npmCmd = resolveNpmCommand();
+  const result = spawnSync(npmCmd, args, options);
+  if (result.error && result.error.code === "ENOENT") {
+    return { status: 1, error: new Error("npm CLI not found") };
+  }
+  return result;
 }
 
 function resolveNpmCli() {
@@ -227,6 +234,9 @@ function resolveNpmCli() {
     path.join(nodeDir, "..", "node_modules", "npm", "bin", "npm-cli.cjs"),
     path.join(nodeDir, "..", "lib", "node_modules", "npm", "bin", "npm-cli.js"),
     path.join(nodeDir, "..", "lib", "node_modules", "npm", "bin", "npm-cli.cjs"),
+    // Linux/macOS: npm is often under lib/node_modules relative to bin
+    path.join(nodeDir, "node_modules", "npm", "bin", "npm-cli.js"),
+    path.join(nodeDir, "node_modules", "npm", "bin", "npm-cli.cjs"),
   ];
   for (const guess of guesses) {
     if (fs.existsSync(guess)) {
