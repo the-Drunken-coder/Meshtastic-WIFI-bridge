@@ -153,9 +153,7 @@ if (args[0] === "update") {
 function runNpm(args, options = {}) {
   const npmCmd = resolveNpmCommand();
   if (process.platform === "win32" && npmCmd.toLowerCase().endsWith(".cmd")) {
-    const escapedArgs = args.map((arg) => `"${String(arg).replace(/"/g, '\\"')}"`).join(" ");
-    const commandLine = `"\"${npmCmd}\" ${escapedArgs}`.trim();
-    return spawnSync("cmd.exe", ["/d", "/s", "/c", commandLine], options);
+    return spawnSync(npmCmd, args, { ...options, shell: true });
   }
   return spawnSync(npmCmd, args, options);
 }
