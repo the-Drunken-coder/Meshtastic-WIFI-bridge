@@ -1,0 +1,64 @@
+name: Test Update Command
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+
+jobs:
+  test-update-unix:
+    name: Test Update (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Install old version (0.1.20)
+      run: npm install -g meshtastic-bridge@0.1.20
+
+    - name: Verify old version installed
+      run: |
+        echo "Checking installed version..."
+        npm list -g meshtastic-bridge --depth=0
+
+    - name: Run meshbridge update
+      run: meshbridge update
+
+    - name: Verify update succeeded
+      run: |
+        echo "Checking version after update..."
+        npm list -g meshtastic-bridge --depth=0
+
+  test-update-windows:
+    name: Test Update (Windows)
+    runs-on: windows-latest
+
+    steps:
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Install old version (0.1.20)
+      run: npm install -g meshtastic-bridge@0.1.20
+
+    - name: Verify old version installed
+      run: |
+        echo "Checking installed version..."
+        npm list -g meshtastic-bridge --depth=0
+
+    - name: Run meshbridge update
+      run: meshbridge update
+
+    - name: Verify update succeeded
+      run: |
+        echo "Checking version after update..."
+        npm list -g meshtastic-bridge --depth=0
