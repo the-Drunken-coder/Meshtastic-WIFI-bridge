@@ -221,11 +221,12 @@ function resolveNpmCli() {
     /* ignore */
   }
   // Last resorts: guess common install locations relative to node
+  const nodeDir = path.dirname(process.execPath);
   const guesses = [
-    path.join(process.execPath, "..", "node_modules", "npm", "bin", "npm-cli.js"),
-    path.join(process.execPath, "..", "node_modules", "npm", "bin", "npm-cli.cjs"),
-    path.join(process.execPath, "..", "lib", "node_modules", "npm", "bin", "npm-cli.js"),
-    path.join(process.execPath, "..", "lib", "node_modules", "npm", "bin", "npm-cli.cjs"),
+    path.join(nodeDir, "..", "node_modules", "npm", "bin", "npm-cli.js"),
+    path.join(nodeDir, "..", "node_modules", "npm", "bin", "npm-cli.cjs"),
+    path.join(nodeDir, "..", "lib", "node_modules", "npm", "bin", "npm-cli.js"),
+    path.join(nodeDir, "..", "lib", "node_modules", "npm", "bin", "npm-cli.cjs"),
   ];
   for (const guess of guesses) {
     if (fs.existsSync(guess)) {
