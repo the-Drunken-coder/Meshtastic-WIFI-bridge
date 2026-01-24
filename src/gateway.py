@@ -85,11 +85,11 @@ def _handle_http_request(_envelope: MessageEnvelope, data: Dict[str, Any]) -> Di
     except Exception as exc:
         return {"error": str(exc)}
 
-    # Minimize payload size over the radio: keep only status and body
-    # Note: content_length removed - can be derived from content_b64
+    # Note: content_length can be derived from content_b64 but is kept for backwards compatibility
     return {
         "status": status,
         "content_b64": base64.b64encode(content).decode("ascii"),
+        "content_length": len(content),
     }
 
 
