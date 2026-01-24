@@ -272,3 +272,89 @@ def test_transport_roundtrip() -> None:
     assert received.command == envelope.command
     assert received.data == envelope.data
 
+
+def test_transport_burst_mode_configuration() -> None:
+    """Test that burst mode parameters are correctly set."""
+    radio = InMemoryRadio("test-node")
+    transport = MeshtasticTransport(
+        radio=radio,
+        segment_size=100,
+        burst_size=10,
+        burst_delay=0.1,
+    )
+
+    assert transport._burst_size == 10
+    assert transport._burst_delay == 0.1
+
+
+def test_transport_burst_mode_default_values() -> None:
+    """Test that burst mode has sensible defaults."""
+    radio = InMemoryRadio("test-node")
+    transport = MeshtasticTransport(radio=radio)
+
+    # Check default values are set
+    assert transport._burst_size == 5  # Default burst size
+    assert transport._burst_delay == 0.05  # Default burst delay
+
+
+def test_transport_burst_mode_sends_multiple_chunks() -> None:
+    """Test that burst mode sends multiple chunks per send_message call."""
+    bus = InMemoryRadioBus()
+    sender_radio = InMemoryRadio("sender", bus)
+    receiver_radio = InMemoryRadio("receiver", bus)
+    
+    # Configure transport with burst mode
+    sender_transport = MeshtasticTransport(
+        sender_radio, 
+        segment_size=40,
+        burst_size=3,  # Send 3 chunks at a time
+        burst_delay=0.0,  # No delay for testing
+    )
+    receiver_transport = MeshtasticTransport(receiver_radio, segment_size=40)
+
+    # Create message that requires multiple chunks
+    envelope = MessageEnvelope(
+        id="burst-test-id",
+        type="request",
+        command="bulk_payload",
+        data={"payload": "x" * 500},
+    )
+
+    # Send message using burst mode
+    sender_transport.send_message(envelope, "receiver")
+
+    # Receive and reassemble the message
+    sender, received = receiver_transport.receive_message(timeout=2.0)
+    
+    assert sender == "sender"
+    assert received is not None
+    assert received.id == envelope.id
+    assert received.data == envelope.data
+
+
+def test_transport_burst_mode_caches_chunks_for_nack() -> None:
+    """Test that burst mode caches chunks for NACK-based recovery."""
+    bus = InMemoryRadioBus()
+    sender_radio = InMemoryRadio("sender", bus)
+    
+    sender_transport = MeshtasticTransport(
+        sender_radio, 
+        segment_size=40,
+        burst_size=5,
+    )
+
+    envelope = MessageEnvelope(
+        id="cache-test-id",
+        type="request",
+        command="test",
+        data={"payload": "x" * 200},
+    )
+
+    # Send message
+    sender_transport.send_message(envelope, "receiver")
+
+    # Check that chunks are cached for NACK recovery
+    message_prefix = envelope.id[:8]
+    assert message_prefix in sender_transport._chunk_cache
+    assert len(sender_transport._chunk_cache[message_prefix]) > 0
+

@@ -37,6 +37,9 @@ over Meshtastic links while preserving reliability and deduplication.
      below a conservative cap to avoid edge cases.
    - Receiver reassembles chunks by message ID prefix, dropping partial loads
      after a configurable TTL.
+   - **Burst mode**: Chunks are sent in bursts (default: 5 chunks per burst) with
+     small delays between bursts. This significantly improves throughput by reducing
+     per-chunk overhead while maintaining reliability through the NACK mechanism.
 
 4. **ACK/NACK reliability**
    - ACKs are single-packet frames with the ACK flag and the message ID in the payload.

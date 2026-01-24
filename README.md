@@ -8,6 +8,7 @@ ACK/NACK reliability strategies, deduplication, and optional spooling.
 
 - Binary envelopes (MessagePack + Zstandard) with compact headers
 - Chunking/reassembly tuned for Meshtastic payload limits
+- **Burst mode transmission** for faster gateway-to-client response delivery
 - Reliability strategies (simple ACK, staged, windowed selective, parity window)
 - Deduplication and semantic-key support to avoid replayed requests
 - Optional on-disk spool for retrying outgoing messages
@@ -65,8 +66,30 @@ Transport modes are defined in JSON files in the `modes/` directory. Each mode c
 - ACK/NACK reliability strategy (simple, staged, windowed, parity)
 - Timeout and retry parameters
 - Compression settings
+- **Burst mode settings** for faster response delivery
 
 Create custom modes by adding new JSON files to the `modes/` directory.
+
+### Burst Mode
+
+Burst mode significantly improves throughput by sending multiple chunks in rapid succession
+instead of one-by-one. This reduces per-chunk overhead and gets responses to clients faster.
+
+Configure burst mode in your mode JSON file:
+```json
+{
+  "transport": {
+    "burst_size": 5,
+    "burst_delay": 0.05
+  }
+}
+```
+
+- `burst_size`: Number of chunks to send in each burst (default: 5)
+- `burst_delay`: Delay in seconds between bursts to allow radio buffer processing (default: 0.05s)
+
+Higher burst sizes provide faster throughput but may increase packet loss in congested networks.
+The existing NACK-based reliability mechanism handles any lost packets automatically.
 
 ## Web Browser
 

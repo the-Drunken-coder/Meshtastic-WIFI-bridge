@@ -14,6 +14,8 @@
     "chunk_delay_threshold": null,
     "chunk_delay_seconds": 0.0,
     "nack_max_per_seq": 3,
-    "nack_interval": 1.0
+    "nack_interval": 1.0,
+    "burst_size": 5,
+    "burst_delay": 0.05
   }
 }

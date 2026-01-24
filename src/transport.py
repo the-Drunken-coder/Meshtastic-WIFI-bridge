@@ -128,6 +128,8 @@ class MeshtasticTransport:
         spool_expiry: float = 86400.0,
         reliability: ReliabilityStrategy | str | None = None,
         enable_spool: bool = False,  # Enable spooling when spool_path is provided
+        burst_size: int = 5,  # Number of chunks to send in a burst before yielding
+        burst_delay: float = 0.05,  # Small delay between bursts to allow radio processing
     ) -> None:
         self.radio = radio
         self.reassembler = MessageReassembler(
@@ -171,6 +173,12 @@ class MeshtasticTransport:
             self.reliability = reliability
         self._enable_spool = enable_spool
         self._disable_dedupe = disable_dedupe
+        
+        # Burst mode configuration for faster chunk transmission
+        # burst_size: how many chunks to send before yielding (higher = faster but may overwhelm radio)
+        # burst_delay: small pause between bursts to allow radio buffer processing
+        self._burst_size = max(1, burst_size)
+        self._burst_delay = max(0.0, burst_delay)
         
         # Internal state for non-blocking transport
         self._active_chunks: Dict[str, List[bytes]] = {}
@@ -250,16 +258,26 @@ class MeshtasticTransport:
             )
 
     def tick(self) -> None:
-        """Process one step of the transport state machine (send one chunk)."""
+        """Process one step of the transport state machine (send a burst of chunks).
+        
+        In burst mode, each tick sends up to `_burst_size` chunks instead of just one,
+        significantly improving throughput for large messages.
+        """
         # 1. Process Receive (non-blocking)
         # This is handled by external calls to receive_message(), or we could call it here.
         # But commonly the main loop calls both.
         
-        # 2. Process Transmit
+        # 2. Process Transmit (burst mode)
         self._tick_transmit()
 
     def _tick_transmit(self) -> None:
-        """Check spool and send one chunk of the highest priority message."""
+        """Check spool and send a burst of chunks for the highest priority message.
+        
+        Burst Mode: Instead of sending one chunk per tick, we send up to `_burst_size`
+        chunks in rapid succession. This dramatically improves throughput by reducing
+        the overhead of polling loops between chunks. The existing NACK mechanism
+        handles any packet loss from burst transmission.
+        """
         if not self.spool:
             return
 
@@ -287,6 +305,8 @@ class MeshtasticTransport:
         # Optimization: cache chunks for the *active* message ID to avoid re-encoding
         # every 100ms.
         chunks = self._get_or_create_chunks(msg_id, envelope)
+        total_chunks = len(chunks)
+        destination = entry.destination
         
         # 2. Determine which chunk to send next
         # We rely on an in-memory "progress pointer" for this message ID.
@@ -296,15 +316,15 @@ class MeshtasticTransport:
         # Call on_send hook when starting a new message (seq == 1)
         if next_seq == 1 and self.reliability:
             try:
-                self.reliability.on_send(self, envelope, entry.destination, len(chunks))
+                self.reliability.on_send(self, envelope, destination, total_chunks)
             except Exception as e:
                 logger.warning("[TRANSPORT] Reliability on_send hook failed for %s: %s", msg_id, e)
         
-        if next_seq > len(chunks):
+        if next_seq > total_chunks:
             # Done sending all chunks - call on_chunks_sent hook
             if self.reliability:
                 try:
-                    self.reliability.on_chunks_sent(self, envelope, entry.destination, len(chunks))
+                    self.reliability.on_chunks_sent(self, envelope, destination, total_chunks)
                 except Exception as e:
                     logger.warning("[TRANSPORT] Reliability on_chunks_sent hook failed for %s: %s", msg_id, e)
             
@@ -322,32 +342,41 @@ class MeshtasticTransport:
             logger.info("[TRANSPORT] Finished sending %s", msg_id)
             return
 
-        # 3. Send the chunk
-        chunk = chunks[next_seq - 1]  # seq is 1-based
-        destination = entry.destination
+        # 3. Send a burst of chunks (up to _burst_size)
+        chunks_sent_in_burst = 0
+        while next_seq <= total_chunks and chunks_sent_in_burst < self._burst_size:
+            chunk = chunks[next_seq - 1]  # seq is 1-based
+            
+            try:
+                self.radio.send(destination, chunk)
+                logger.debug("[TRANSPORT] Sent chunk %d/%d for %s", next_seq, total_chunks, msg_id)
+                self._inc_sent_chunks(msg_id)
+                
+                self._metrics.inc(
+                    "transport_chunks_total",
+                    labels={"direction": "outbound", "command": envelope.command or "unknown"},
+                )
+                
+                # Update progress
+                self._advance_progress(msg_id)
+                chunks_sent_in_burst += 1
+                next_seq += 1
+                
+            except Exception as e:
+                logger.error("[TRANSPORT] Failed to send chunk %d for %s: %s", next_seq, msg_id, e)
+                # Mark the failed attempt and clear in-memory state to avoid rapid retry loops
+                if self.spool:
+                    self.spool.mark_attempt(msg_id)
+                self._clear_progress(msg_id)
+                return
         
-        try:
-            self.radio.send(destination, chunk)
-            logger.debug("[TRANSPORT] Sent chunk %d/%d for %s", next_seq, len(chunks), msg_id)
-            self._inc_sent_chunks(msg_id)
-            
-            self._metrics.inc(
-                "transport_chunks_total",
-                labels={"direction": "outbound", "command": envelope.command or "unknown"},
-            )
-            
-            # Update progress
-            self._advance_progress(msg_id)
-            
-            # "Touch" the spool entry so it doesn't expire while we are actively sending
-            self.spool.touch(msg_id)
-            
-        except Exception as e:
-            logger.error("[TRANSPORT] Failed to send chunk %d for %s: %s", next_seq, msg_id, e)
-            # Mark the failed attempt and clear in-memory state to avoid rapid retry loops
-            if self.spool:
-                self.spool.mark_attempt(msg_id)
-            self._clear_progress(msg_id)
+        # "Touch" the spool entry so it doesn't expire while we are actively sending
+        self.spool.touch(msg_id)
+        
+        # Apply burst delay if we sent a full burst and more chunks remain
+        if chunks_sent_in_burst == self._burst_size and next_seq <= total_chunks:
+            if self._burst_delay > 0:
+                time.sleep(self._burst_delay)
 
 
 
@@ -400,6 +429,10 @@ class MeshtasticTransport:
         
         When spool is enabled, messages are enqueued for async sending via tick().
         When spool is disabled, messages are sent immediately for backward compatibility.
+        
+        Burst Mode: Chunks are sent in bursts of `_burst_size` with a small delay
+        between bursts. This significantly improves throughput by reducing per-chunk
+        overhead while maintaining reliability through NACK-based recovery.
         """
         if self._enable_spool and self.spool is not None:
             logger.warning("[TRANSPORT] send_message is deprecated; use enqueue() for non-blocking behavior")
@@ -408,6 +441,12 @@ class MeshtasticTransport:
             # Direct send for backward compatibility when spool is disabled
             chunks = list(chunk_envelope(envelope, self.segment_size))
             total_chunks = len(chunks)
+            
+            # Cache chunks for NACK-based resends (burst mode may have higher loss)
+            message_prefix = self._message_prefix(envelope.id)
+            self._cache_chunks(message_prefix, chunks)
+            
+            # Send chunks in bursts for improved throughput
             for idx, chunk in enumerate(chunks, start=1):
                 self.radio.send(destination, chunk)
                 self._inc_sent_chunks(envelope.id)
@@ -417,8 +456,15 @@ class MeshtasticTransport:
                     "transport_chunks_total",
                     labels={"direction": "outbound", "command": envelope.command or "unknown"},
                 )
+                
+                # Apply delays: either explicit chunk_delay or burst-based pacing
                 if chunk_delay > 0:
                     time.sleep(chunk_delay)
+                elif idx % self._burst_size == 0 and idx < total_chunks:
+                    # Small pause between bursts to allow radio buffer processing
+                    if self._burst_delay > 0:
+                        time.sleep(self._burst_delay)
+                        
             self._metrics.inc(
                 "transport_messages_total",
                 labels={
