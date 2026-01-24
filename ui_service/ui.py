@@ -312,6 +312,8 @@ def render_ui(console: Console, backend_state: BackendState, ui_state: UIState) 
 
 
 def _render_body(backend_state: BackendState, ui_state: UIState, content_width: int) -> Text:
+    if ui_state.palette_open:
+        return _render_palette_view(ui_state)
     if ui_state.view == "gateway":
         return _render_gateway_body(backend_state, ui_state)
     if ui_state.view == "client":
@@ -392,9 +394,15 @@ def _render_gateway_body(backend_state: BackendState, ui_state: UIState) -> Text
             text.append(f"{line}\n", style="dim")
     else:
         text.append("No traffic yet\n", style="dim")
-    if ui_state.palette_open:
-        text.append("\n\nCommand Palette:\n", style="bold cyan")
-        text.append(_render_palette(ui_state))
+    return text
+
+
+def _render_palette_view(ui_state: UIState) -> Text:
+    text = Text()
+    text.append("Command Palette\n\n", style="bold cyan")
+    text.append(_render_palette(ui_state))
+    text.append("\n\n", style="dim")
+    text.append("Esc to close | Up/Down to navigate | Enter to run", style="dim")
     return text
 
 
@@ -469,9 +477,6 @@ def _render_client_body(
     notice = _notice_text(ui_state)
     if notice:
         text.append(f"\n\n{notice}", style="yellow")
-    if ui_state.palette_open:
-        text.append("\n\nCommand Palette:\n", style="bold cyan")
-        text.append(_render_palette(ui_state))
     return text
 
 
