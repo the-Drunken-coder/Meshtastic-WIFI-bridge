@@ -52,7 +52,7 @@ function resolvePython() {
 }
 
 function readInstalledVersion() {
-  const result = spawnSync(resolveNpmCommand(), ["list", "-g", "meshtastic-bridge", "--depth=0", "--json"], {
+  const result = runNpm(["list", "-g", "meshtastic-bridge", "--depth=0", "--json"], {
     encoding: "utf8",
   });
   if (result.status !== 0 || !result.stdout) {
@@ -70,7 +70,7 @@ function readInstalledVersion() {
 }
 
 function readLatestVersion() {
-  const result = spawnSync(resolveNpmCommand(), ["view", "meshtastic-bridge", "version"], {
+  const result = runNpm(["view", "meshtastic-bridge", "version"], {
     encoding: "utf8",
   });
   if (result.status !== 0 || !result.stdout) {
@@ -118,7 +118,7 @@ if (args[0] === "update") {
   } else {
     console.log("meshbridge: could not determine installed version");
   }
-  const update = spawnSync(npmCmd, ["install", "-g", "meshtastic-bridge"], {
+  const update = runNpm(["install", "-g", "meshtastic-bridge"], {
     stdio: "inherit",
   });
   if (update.error) {
@@ -148,6 +148,15 @@ if (args[0] === "update") {
     console.log("meshbridge: update completed");
   }
   process.exit(0);
+}
+
+function runNpm(args, options = {}) {
+  const npmCmd = resolveNpmCommand();
+  if (process.platform === "win32" && npmCmd.toLowerCase().endsWith(".cmd")) {
+    const quoted = [`"${npmCmd}"`, ...args.map((arg) => `"${arg}"`)].join(" ");
+    return spawnSync("cmd.exe", ["/d", "/s", "/c", quoted], options);
+  }
+  return spawnSync(npmCmd, args, options);
 }
 
 const python = resolvePython();
