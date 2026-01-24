@@ -15,8 +15,11 @@ ROOT = Path(__file__).resolve()
 while ROOT != ROOT.parent and not (ROOT / "src").exists():
     ROOT = ROOT.parent
 SRC = ROOT / "src"
+UI_SERVICE = ROOT / "ui_service"
 if SRC.exists() and str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
+if UI_SERVICE.exists() and str(UI_SERVICE) not in sys.path:
+    sys.path.insert(0, str(UI_SERVICE))
 
 from client import MeshtasticClient
 from config import BridgeConfig
@@ -61,6 +64,23 @@ def parse_args() -> BridgeConfig:
         action="store_true",
         help="Disable metrics and health endpoints",
     )
+    # Web browser mode for client
+    parser.add_argument(
+        "--web-browser",
+        action="store_true",
+        help="Start a web browser UI for browsing over the mesh (client mode only)",
+    )
+    parser.add_argument(
+        "--web-host",
+        default="127.0.0.1",
+        help="Host interface for the web browser UI (default: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--web-port",
+        type=int,
+        default=8080,
+        help="Port for the web browser UI (default: 8080)",
+    )
     args = parser.parse_args()
     configure_logging(args.log_level)
     metrics_enabled_env = os.getenv("MESHTASTIC_METRICS_ENABLED")
@@ -83,6 +103,9 @@ def parse_args() -> BridgeConfig:
     config._data = args.data
     config._radio_port = args.radio_port
     config._node_id = args.node_id or ("gateway" if args.mode == "gateway" else "client")
+    config._web_browser = args.web_browser  # type: ignore[attr-defined]
+    config._web_host = args.web_host  # type: ignore[attr-defined]
+    config._web_port = args.web_port  # type: ignore[attr-defined]
     return config
 
 
@@ -97,14 +120,46 @@ def run_gateway(config: BridgeConfig, transport: MeshtasticTransport) -> None:
 
 
 def run_client(config: BridgeConfig, transport: MeshtasticTransport) -> None:
+    # Check if web browser mode is requested
+    web_browser = getattr(config, "_web_browser", False)
+    if web_browser:
+        run_web_browser(config, transport)
+        return
+    
     command = getattr(config, "_command", None)
     if not command:
-        raise RuntimeError("Client mode requires --command")
+        raise RuntimeError("Client mode requires --command or --web-browser")
     data_str = getattr(config, "_data", "{}")
     payload: dict[str, Any] = json.loads(data_str)
     client = MeshtasticClient(transport, config.gateway_node_id)
     response = client.send_request(command, payload, timeout=config.timeout)
     print(json.dumps(response.to_dict(), indent=2))
+
+
+def run_web_browser(config: BridgeConfig, transport: MeshtasticTransport) -> None:
+    """Start the web browser UI for browsing over the mesh."""
+    from web_ui import MeshWebBrowser
+    
+    web_host = getattr(config, "_web_host", "127.0.0.1")
+    web_port = getattr(config, "_web_port", 8080)
+    
+    browser = MeshWebBrowser(
+        gateway_node_id=config.gateway_node_id,
+        transport=transport,
+        host=web_host,
+        port=web_port,
+    )
+    
+    LOGGER.info("Starting Meshtastic Web Browser")
+    LOGGER.info(f"Open http://{web_host}:{web_port} in your browser")
+    LOGGER.info(f"Gateway Node ID: {config.gateway_node_id}")
+    
+    try:
+        browser.run()
+    except KeyboardInterrupt:
+        LOGGER.info("Web browser stopping")
+    finally:
+        browser.shutdown()
 
 
 def start_observability_server(

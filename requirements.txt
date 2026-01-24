@@ -4,3 +4,4 @@ meshtastic
 pypubsub
 typing_extensions
 rich
+flask
