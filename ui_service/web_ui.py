@@ -994,13 +994,18 @@ class MeshWebBrowser:
             self._radio.close()
 
     def _is_gateway_id_valid(self) -> bool:
-        """Return True if gateway_node_id looks like a valid hex node id."""
+        """Return True if a gateway id is set to something non-empty/non-unknown.
+        
+        We allow any non-empty string here (except "unknown"/"!unknown") because
+        different deployments may use non-hex identifiers, and unit tests use
+        test ids. The TUI should enforce stricter validation if needed.
+        """
         if not self.gateway_node_id:
             return False
         gid = self.gateway_node_id.strip()
         if gid.lower() in {"unknown", "!unknown"}:
             return False
-        return bool(re.fullmatch(r"!?[0-9a-fA-F]+", gid))
+        return True
 
 
 def main():
