@@ -52,10 +52,13 @@ function resolvePython() {
 }
 
 function readInstalledVersion() {
-  const result = spawnSync("npm", ["list", "-g", "meshtastic-bridge", "--depth=0", "--json"], {
+  const result = spawnSync(resolveNpmCommand(), ["list", "-g", "meshtastic-bridge", "--depth=0", "--json"], {
     encoding: "utf8",
   });
   if (result.status !== 0 || !result.stdout) {
+    if (result.error) {
+      console.warn(`meshbridge: npm list failed (${result.error.message})`);
+    }
     return null;
   }
   try {
@@ -67,35 +70,69 @@ function readInstalledVersion() {
 }
 
 function readLatestVersion() {
-  const result = spawnSync("npm", ["view", "meshtastic-bridge", "version"], {
+  const result = spawnSync(resolveNpmCommand(), ["view", "meshtastic-bridge", "version"], {
     encoding: "utf8",
   });
   if (result.status !== 0 || !result.stdout) {
+    if (result.error) {
+      console.warn(`meshbridge: npm view failed (${result.error.message})`);
+    }
     return null;
   }
   return result.stdout.trim() || null;
 }
 
+function resolveNpmCommand() {
+  if (process.platform !== "win32") {
+    return "npm";
+  }
+  const candidates = [
+    process.env.npm_execpath,
+    path.join(process.env.APPDATA || "", "npm", "npm.cmd"),
+    path.join(process.env.ProgramFiles || "C:\\Program Files", "nodejs", "npm.cmd"),
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return "npm";
+}
+
 const args = process.argv.slice(2);
 if (args[0] === "update") {
+  const npmCmd = resolveNpmCommand();
   const before = readInstalledVersion();
   const latest = readLatestVersion();
   console.log("meshbridge: updating meshtastic-bridge...");
+  if (process.platform === "win32") {
+    console.log(`meshbridge: using ${npmCmd}`);
+  }
   if (latest) {
     console.log(`meshbridge: latest version is ${latest}`);
+  } else {
+    console.log("meshbridge: could not determine latest version");
   }
   if (before) {
     console.log(`meshbridge: installed version is ${before}`);
+  } else {
+    console.log("meshbridge: could not determine installed version");
   }
-  const update = spawnSync("npm", ["install", "-g", "meshtastic-bridge"], {
+  const update = spawnSync(npmCmd, ["install", "-g", "meshtastic-bridge"], {
     stdio: "inherit",
   });
   if (update.error) {
-    console.error(`meshbridge: update failed (${update.error.message})`);
+    console.error(
+      `meshbridge: update failed (${update.error.message}). ` +
+        "Ensure Node.js and npm are installed and on your PATH."
+    );
     process.exit(1);
   }
   if (update.status !== 0) {
-    console.error(`meshbridge: update failed (code ${update.status})`);
+    console.error(
+      `meshbridge: update failed (code ${update.status}). ` +
+        "Try running: npm install -g meshtastic-bridge"
+    );
     process.exit(update.status ?? 1);
   }
   const after = readInstalledVersion();
