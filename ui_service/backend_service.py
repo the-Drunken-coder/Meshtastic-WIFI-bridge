@@ -221,9 +221,15 @@ class BackendService:
             self._ensure_radio_connection(ports, error)
             accessible: list[str] = []
             for port in ports:
+                if self._radio_port and port == self._radio_port:
+                    accessible.append(port)
+                    continue
                 ok, _ = _probe_port_accessibility(port)
                 if ok:
                     accessible.append(port)
+            # Always include the current radio port if connected
+            if self._radio_port and self._radio_port not in accessible:
+                accessible.append(self._radio_port)
             with self._lock:
                 if self._radio:
                     self._state.radio_ports = [self._radio_port] if self._radio_port else []
@@ -325,8 +331,15 @@ class BackendService:
         self._preferred_port = port
 
     def list_accessible_ports(self) -> list[str]:
+        snapshot = self.snapshot()
+        accessible = list(getattr(snapshot, "accessible_ports", []) or [])
+        # Always include current connected port
+        if self._radio_port and self._radio_port not in accessible:
+            accessible.append(self._radio_port)
+        if accessible:
+            return accessible
+        # Fallback probe if nothing cached
         ports, _ = detect_radio_ports()
-        accessible: list[str] = []
         for port in ports:
             ok, _ = _probe_port_accessibility(port)
             if ok:
