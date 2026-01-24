@@ -176,6 +176,13 @@ class BackendService:
         self._preferred_port: str | None = None
         self._mode_name: str = "general"
         self._mode_config: dict = _load_mode_config(self._mode_name)
+        # Cache for port accessibility probing to avoid expensive I/O on every poll.
+        # TTL of 30 seconds balances responsiveness with performance - allows detecting
+        # new ports within reasonable time while avoiding excessive serial port probing.
+        self._last_ports: list[str] = []
+        self._last_accessible: list[str] = []
+        self._last_probe_time: float = 0.0
+        self._probe_ttl_seconds: float = 30.0
 
     def start(self) -> None:
         self._thread.start()
@@ -192,7 +199,7 @@ class BackendService:
         with self._lock:
             return BackendState(
                 radio_ports=list(self._state.radio_ports),
-                accessible_ports=list(getattr(self._state, "accessible_ports", [])),
+                accessible_ports=list(self._state.accessible_ports),
                 radio_detected=self._state.radio_detected,
                 last_error=self._state.last_error,
                 mode=self._state.mode,
@@ -228,14 +235,26 @@ class BackendService:
         while not self._stop_event.is_set():
             ports, error = detect_radio_ports()
             self._ensure_radio_connection(ports, error)
-            accessible: list[str] = []
-            for port in ports:
-                if self._radio_port and port == self._radio_port:
-                    accessible.append(port)
-                    continue
-                ok, _ = _probe_port_accessibility(port)
-                if ok:
-                    accessible.append(port)
+            
+            # Cache for port accessibility probing to avoid expensive I/O on every poll.
+            # Re-probe ports only if the list of ports has changed or the cache is stale.
+            now = time.time()
+            if ports != self._last_ports or (now - self._last_probe_time) >= self._probe_ttl_seconds:
+                accessible: list[str] = []
+                for port in ports:
+                    if self._radio_port and port == self._radio_port:
+                        accessible.append(port)
+                        continue
+                    ok, _ = _probe_port_accessibility(port)
+                    if ok:
+                        accessible.append(port)
+                self._last_ports = list(ports)
+                self._last_accessible = list(accessible)
+                self._last_probe_time = now
+            else:
+                # Use cached accessibility results when ports are unchanged and cache is fresh.
+                accessible = list(self._last_accessible)
+            
             # Always include the current radio port if connected
             if self._radio_port and self._radio_port not in accessible:
                 accessible.append(self._radio_port)
@@ -325,8 +344,7 @@ class BackendService:
         with self._lock:
             if mode_name == self._mode_name:
                 return
-        config = _load_mode_config(mode_name)
-        with self._lock:
+            config = _load_mode_config(mode_name)
             self._mode_name = mode_name
             self._mode_config = config
         # Rebuild transport for new settings
@@ -341,7 +359,7 @@ class BackendService:
 
     def list_accessible_ports(self) -> list[str]:
         snapshot = self.snapshot()
-        accessible = list(getattr(snapshot, "accessible_ports", []) or [])
+        accessible = list(snapshot.accessible_ports or [])
         # Always include current connected port
         if self._radio_port and self._radio_port not in accessible:
             accessible.append(self._radio_port)
