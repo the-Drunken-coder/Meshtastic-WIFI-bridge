@@ -729,12 +729,22 @@ class MeshWebBrowser:
                         (req_id, req) for req_id, req in self._requests.items()
                         if req.status in ("done", "error")
                     ]
-                    # Sort by start_time (oldest first) and remove half of them
-                    # to reduce memory while avoiding too-frequent cleanups
-                    completed.sort(key=lambda x: x[1].start_time)
-                    num_to_remove = len(completed) // 2
-                    for req_id, _ in completed[:num_to_remove]:
-                        del self._requests[req_id]
+                    
+                    if completed:
+                        # Sort by start_time (oldest first) and remove half of them
+                        # to reduce memory while avoiding too-frequent cleanups
+                        completed.sort(key=lambda x: x[1].start_time)
+                        num_to_remove = max(1, len(completed) // 2)
+                        for req_id, _ in completed[:num_to_remove]:
+                            del self._requests[req_id]
+                    else:
+                        # No completed requests to clean up, but we're over limit.
+                        # This could happen if all requests are pending/sending.
+                        # Log a warning but allow the new request to proceed.
+                        LOGGER.warning(
+                            f"Request limit ({MAX_REQUESTS}) exceeded with no completed "
+                            f"requests to clean up. Total requests: {len(self._requests)}"
+                        )
                 
                 self._request_counter += 1
                 request_id = f"req_{self._request_counter}_{int(time.time())}"
@@ -790,6 +800,8 @@ class MeshWebBrowser:
     def _ensure_client(self) -> MeshtasticClient:
         """Ensure we have a working client connection."""
         # Fast path without locking if the client is already initialized.
+        # This is thread-safe because _client is only set once (never reset to None).
+        # Reading object references in Python is atomic.
         if self._client is not None:
             return self._client
 
