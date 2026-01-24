@@ -153,8 +153,9 @@ if (args[0] === "update") {
 function runNpm(args, options = {}) {
   const npmCmd = resolveNpmCommand();
   if (process.platform === "win32" && npmCmd.toLowerCase().endsWith(".cmd")) {
-    const quoted = [`"${npmCmd}"`, ...args.map((arg) => `"${arg}"`)].join(" ");
-    return spawnSync("cmd.exe", ["/d", "/s", "/c", quoted], options);
+    const quotedArgs = args.map((arg) => `"${arg}"`).join(" ");
+    const commandLine = `"\"${npmCmd}\" ${quotedArgs}`.trim() + "\"";
+    return spawnSync("cmd.exe", ["/d", "/s", "/c", commandLine], options);
   }
   return spawnSync(npmCmd, args, options);
 }
