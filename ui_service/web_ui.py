@@ -8,6 +8,7 @@ the mesh network.
 from __future__ import annotations
 
 import base64
+import html
 import logging
 import re
 import threading
@@ -32,6 +33,9 @@ from radio import build_radio
 from transport import MeshtasticTransport
 
 LOGGER = logging.getLogger(__name__)
+
+# Configuration constants
+MAX_REQUESTS = 100  # Maximum number of requests to keep in memory
 
 
 # HTML template for the web browser UI
@@ -673,6 +677,7 @@ class MeshWebBrowser:
         self._radio_port = radio_port
         self._radio = None
         self._client: MeshtasticClient | None = None
+        self._client_lock = threading.Lock()
         
         # Track in-flight requests
         self._requests: dict[str, BrowseRequest] = {}
@@ -717,16 +722,18 @@ class MeshWebBrowser:
             
             # Create request tracking
             with self._request_lock:
-                # Clean up old completed requests (keep last 100)
-                if len(self._requests) > 100:
-                    # Remove oldest completed/error requests
+                # Clean up old completed requests to prevent memory leak
+                if len(self._requests) > MAX_REQUESTS:
+                    # Find all completed/error requests
                     completed = [
                         (req_id, req) for req_id, req in self._requests.items()
                         if req.status in ("done", "error")
                     ]
-                    # Sort by start_time and remove oldest
+                    # Sort by start_time (oldest first) and remove half of them
+                    # to reduce memory while avoiding too-frequent cleanups
                     completed.sort(key=lambda x: x[1].start_time)
-                    for req_id, _ in completed[:len(completed) // 2]:
+                    num_to_remove = len(completed) // 2
+                    for req_id, _ in completed[:num_to_remove]:
                         del self._requests[req_id]
                 
                 self._request_counter += 1
@@ -785,12 +792,6 @@ class MeshWebBrowser:
         # Fast path without locking if the client is already initialized.
         if self._client is not None:
             return self._client
-
-        # Lazily create a dedicated lock for client initialization.
-        # A race on creating this attribute is harmless; all threads
-        # will refer to some Lock instance, and Lock itself is thread-safe.
-        if not hasattr(self, "_client_lock"):
-            self._client_lock = threading.Lock()
 
         # Double-checked locking to avoid initializing the client multiple times.
         with self._client_lock:
@@ -898,33 +899,32 @@ class MeshWebBrowser:
                     req.error = str(e)
                     req.duration = time.time() - start_time
     
-    def _rewrite_html(self, html: str, base_url: str) -> str:
+    def _rewrite_html(self, html_content: str, base_url: str) -> str:
         """Rewrite HTML to make relative URLs absolute."""
         # Escape base_url to prevent XSS via HTML attribute injection
-        import html as html_module
-        escaped_base_url = html_module.escape(base_url, quote=True)
+        escaped_base_url = html.escape(base_url, quote=True)
         
         # Add base tag for relative URLs
-        if '<head' in html.lower():
-            html = re.sub(
+        if '<head' in html_content.lower():
+            html_content = re.sub(
                 r'(<head[^>]*>)',
                 rf'\1<base href="{escaped_base_url}">',
-                html,
+                html_content,
                 count=1,
                 flags=re.IGNORECASE
             )
-        elif '<html' in html.lower():
-            html = re.sub(
+        elif '<html' in html_content.lower():
+            html_content = re.sub(
                 r'(<html[^>]*>)',
                 rf'\1<head><base href="{escaped_base_url}"></head>',
-                html,
+                html_content,
                 count=1,
                 flags=re.IGNORECASE
             )
         else:
-            html = f'<head><base href="{escaped_base_url}"></head>' + html
+            html_content = f'<head><base href="{escaped_base_url}"></head>' + html_content
         
-        return html
+        return html_content
     
     def run(self, debug: bool = False) -> None:
         """Start the web server."""
