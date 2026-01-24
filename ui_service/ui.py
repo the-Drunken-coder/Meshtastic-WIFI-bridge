@@ -9,6 +9,8 @@ import sys
 import threading
 import time
 import textwrap
+import glob
+from pathlib import Path
 from dataclasses import dataclass
 from rich.console import Console
 from rich.panel import Panel
@@ -44,6 +46,19 @@ def _load_version() -> str:
         return str(version) if version else "unknown"
     except Exception:
         return "unknown"
+
+
+def _load_modes() -> list[str]:
+    root = Path(__file__).resolve().parent.parent
+    modes_dir = root / "modes"
+    names: list[str] = []
+    try:
+        for path in glob.glob(str(modes_dir / "*.json")):
+            name = Path(path).stem
+            names.append(name)
+    except Exception:
+        return ["general"]
+    return names or ["general"]
 
 
 def _hex_to_rgb(color: str) -> tuple[int, int, int]:
@@ -140,6 +155,8 @@ class UIState:
     client_scroll: int = 0
     client_notice: str | None = None
     client_notice_time: float = 0.0
+    modes: list[str] = None  # type: ignore[assignment]
+    mode_index: int = 0
 
 
 MENU_OPTIONS = ["Open Client", "Start Gateway"]
@@ -286,7 +303,7 @@ def render_ui(console: Console, backend_state: BackendState, ui_state: UIState) 
 
 def _render_body(backend_state: BackendState, ui_state: UIState, content_width: int) -> Text:
     if ui_state.view == "gateway":
-        return _render_gateway_body(backend_state)
+        return _render_gateway_body(backend_state, ui_state)
     if ui_state.view == "client":
         return _render_client_body(backend_state, ui_state, content_width)
     return _render_menu_body(backend_state, ui_state)
@@ -317,7 +334,7 @@ def _render_menu_body(backend_state: BackendState, ui_state: UIState) -> Text:
     return text
 
 
-def _render_gateway_body(backend_state: BackendState) -> Text:
+def _render_gateway_body(backend_state: BackendState, ui_state: UIState) -> Text:
     text = Text()
     text.append("Gateway Running\n\n", style="bold cyan")
     if backend_state.gateway_error:
@@ -329,6 +346,9 @@ def _render_gateway_body(backend_state: BackendState) -> Text:
         text.append(backend_state.radio_ports[0], style="green")
     else:
         text.append("none", style="dim")
+    text.append("\n", style="dim")
+    text.append("Mode: ", style="bold cyan")
+    text.append(_current_mode_label(ui_state), style="green")
     text.append("\n", style="dim")
     text.append("Local Radio ID: ", style="bold cyan")
     if backend_state.local_radio_id:
@@ -377,6 +397,8 @@ def _render_client_body(
         text.append(backend_state.radio_ports[0], style="green")
     else:
         text.append("none", style="dim")
+    text.append("\nMode: ", style="bold cyan")
+    text.append(_current_mode_label(ui_state), style="green")
     text.append("\nLocal Radio ID: ", style="bold cyan")
     if backend_state.local_radio_id:
         text.append(backend_state.local_radio_id, style="green")
@@ -468,6 +490,19 @@ def _format_timestamp(ts: float | None) -> str:
     return time.strftime("%H:%M:%S", time.localtime(ts))
 
 
+def _cycle_mode(ui_state: UIState) -> None:
+    if not ui_state.modes:
+        ui_state.modes = ["general"]
+    ui_state.mode_index = (ui_state.mode_index + 1) % len(ui_state.modes)
+
+
+def _current_mode_label(ui_state: UIState) -> str:
+    if not ui_state.modes:
+        return "general"
+    idx = ui_state.mode_index % len(ui_state.modes)
+    return ui_state.modes[idx]
+
+
 def _set_notice(ui_state: UIState, message: str) -> None:
     ui_state.client_notice = message
     ui_state.client_notice_time = time.time()
@@ -543,6 +578,8 @@ def _render_footer(ui_state: UIState) -> Text:
         text.append("PgUp/PgDn", style="bold white")
         text.append(" to scroll", style="dim")
     text.append(" | ", style="dim")
+    text.append("M to change mode", style="dim")
+    text.append(" | ", style="dim")
     text.append(f"v{BRIDGE_VERSION}", style="dim")
     return text
 
@@ -565,6 +602,9 @@ def _handle_menu_key(key: str, ui_state: UIState, backend: BackendService) -> No
         ui_state.menu_index = (ui_state.menu_index - 1) % len(MENU_OPTIONS)
     elif key == "down":
         ui_state.menu_index = (ui_state.menu_index + 1) % len(MENU_OPTIONS)
+    elif key.lower() == "m":
+        _cycle_mode(ui_state)
+        _set_notice(ui_state, f"Mode set to {_current_mode_label(ui_state)}")
     elif key == "enter":
         if not backend.snapshot().radio_detected:
             return
@@ -581,6 +621,10 @@ def _handle_menu_key(key: str, ui_state: UIState, backend: BackendService) -> No
 def _handle_client_key(key: str, ui_state: UIState, backend: BackendService) -> None:
     if key in {"esc", "q"}:
         ui_state.view = "menu"
+        return
+    if key.lower() == "m":
+        _cycle_mode(ui_state)
+        _set_notice(ui_state, f"Mode set to {_current_mode_label(ui_state)}")
         return
     if key.lower() == "h":
         if ui_state.client_gateway_id:
@@ -638,6 +682,7 @@ def main() -> None:
     key_reader = KeyReader()
     global BRIDGE_VERSION
     BRIDGE_VERSION = _load_version()
+    ui_state.modes = _load_modes()
     
     try:
         console.clear()
