@@ -51,19 +51,62 @@ function resolvePython() {
   return null;
 }
 
+function readInstalledVersion() {
+  const result = spawnSync("npm", ["list", "-g", "meshtastic-bridge", "--depth=0", "--json"], {
+    encoding: "utf8",
+  });
+  if (result.status !== 0 || !result.stdout) {
+    return null;
+  }
+  try {
+    const data = JSON.parse(result.stdout);
+    return data.dependencies?.["meshtastic-bridge"]?.version || null;
+  } catch (err) {
+    return null;
+  }
+}
+
+function readLatestVersion() {
+  const result = spawnSync("npm", ["view", "meshtastic-bridge", "version"], {
+    encoding: "utf8",
+  });
+  if (result.status !== 0 || !result.stdout) {
+    return null;
+  }
+  return result.stdout.trim() || null;
+}
+
 const args = process.argv.slice(2);
 if (args[0] === "update") {
+  const before = readInstalledVersion();
+  const latest = readLatestVersion();
   console.log("meshbridge: updating meshtastic-bridge...");
+  if (latest) {
+    console.log(`meshbridge: latest version is ${latest}`);
+  }
+  if (before) {
+    console.log(`meshbridge: installed version is ${before}`);
+  }
   const update = spawnSync("npm", ["install", "-g", "meshtastic-bridge"], {
     stdio: "inherit",
   });
-  if (update.status === 0) {
-    const current = spawnSync("npm", ["list", "-g", "meshtastic-bridge", "--depth=0"], {
-      stdio: "inherit",
-    });
-    process.exit(current.status ?? 0);
+  if (update.status !== 0) {
+    console.error(`meshbridge: update failed (code ${update.status})`);
+    process.exit(update.status ?? 1);
   }
-  process.exit(update.status ?? 1);
+  const after = readInstalledVersion();
+  if (before && after) {
+    if (before === after) {
+      console.log(`meshbridge: already up to date (${after})`);
+    } else {
+      console.log(`meshbridge: updated ${before} -> ${after}`);
+    }
+  } else if (after) {
+    console.log(`meshbridge: installed ${after}`);
+  } else {
+    console.log("meshbridge: update completed");
+  }
+  process.exit(0);
 }
 
 const python = resolvePython();
