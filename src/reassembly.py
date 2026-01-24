@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Dict, Optional, TypedDict, List, Set, Tuple
 
 from message import MessageEnvelope, parse_chunk, reconstruct_message
+
+logger = logging.getLogger(__name__)
 
 
 class MessageBucket(TypedDict):
@@ -112,10 +115,6 @@ class MessageReassembler:
         - NACK emission is throttled via :meth:`_should_nack` and per-sequence
           caps stored in ``_nack_counts`` to avoid noisy retransmissions.
         """
-        import logging
-
-        logger = logging.getLogger(__name__)
-
         now = time.time()
         try:
             _flags, chunk_id, chunk_seq, chunk_total, chunk_data = parse_chunk(chunk)

@@ -24,6 +24,11 @@ class RequestDeduper:
         self._max = max_entries
         self._lease = lease_seconds
         self._lock = threading.Lock()
+        # Periodic cleanup state (avoid O(n) scan on every check)
+        self._check_counter: int = 0
+        self._cleanup_every_n: int = 20  # Cleanup every 20 checks
+        self._last_cleanup: float = 0.0
+        self._cleanup_interval: float = 5.0  # Or every 5 seconds
 
     @property
     def lease_seconds(self) -> float:
@@ -53,19 +58,40 @@ class RequestDeduper:
         if enforce_limit:
             self._enforce_limit(self._seen)
 
+    def _should_cleanup(self, now: float) -> bool:
+        """Check if we should run cleanup based on counter or time."""
+        self._check_counter += 1
+        if self._check_counter >= self._cleanup_every_n:
+            return True
+        if now - self._last_cleanup >= self._cleanup_interval:
+            return True
+        return False
+
     def check_keys(self, keys: Iterable[Hashable], lease_seconds: Optional[float] = None) -> bool:
         """Check multiple keys atomically, applying a lease if they are new."""
         lease = lease_seconds or self._lease
         now = self._now()
         with self._lock:
-            self._purge_expired(now)
+            # Periodic full cleanup instead of every call (O(n) -> amortized O(1))
+            if self._should_cleanup(now):
+                self._purge_expired(now)
+                self._check_counter = 0
+                self._last_cleanup = now
 
             for key in keys:
                 if key in self._in_progress:
-                    return True
+                    # Check if this specific key is expired (O(1) lookup)
+                    if self._in_progress[key] <= now:
+                        self._in_progress.pop(key, None)
+                    else:
+                        return True
                 if key in self._seen:
-                    self._seen.move_to_end(key)
-                    return True
+                    # Check if this specific key is expired (O(1) lookup)
+                    if self._seen[key] <= now:
+                        self._seen.pop(key, None)
+                    else:
+                        self._seen.move_to_end(key)
+                        return True
 
             self._mark_seen(keys, now + lease)
             return False

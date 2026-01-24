@@ -32,6 +32,10 @@ class SerialRadioAdapter:
         self._dedupe_ttl_seconds = 8.0
         self._message_lock = threading.Lock()  # Thread-safe access to recent_messages
         self._disable_dedupe = disable_dedupe
+        # Periodic cleanup state (avoid O(n) scan on every message)
+        self._dedupe_cleanup_counter: int = 0
+        self._dedupe_cleanup_every_n: int = 25  # Cleanup every 25 messages
+        self._last_dedupe_cleanup: float = 0.0
 
         # Check and log radio configuration
         self._check_radio_config()
@@ -201,14 +205,23 @@ class SerialRadioAdapter:
                     )
                 with self._message_lock:
                     now = time.time()
-                    # Clear expired keys.
-                    expired = [
-                        key
-                        for key, ts in self._recent_messages.items()
-                        if now - ts >= self._dedupe_ttl_seconds
-                    ]
-                    for key in expired:
-                        self._recent_messages.pop(key, None)
+                    
+                    # Periodic cleanup instead of every message (O(n) -> amortized O(1))
+                    self._dedupe_cleanup_counter += 1
+                    should_cleanup = (
+                        self._dedupe_cleanup_counter >= self._dedupe_cleanup_every_n
+                        or now - self._last_dedupe_cleanup >= self._dedupe_ttl_seconds
+                    )
+                    if should_cleanup:
+                        expired = [
+                            key
+                            for key, ts in self._recent_messages.items()
+                            if now - ts >= self._dedupe_ttl_seconds
+                        ]
+                        for key in expired:
+                            self._recent_messages.pop(key, None)
+                        self._dedupe_cleanup_counter = 0
+                        self._last_dedupe_cleanup = now
 
                     if message_key in self._recent_messages:
                         LOGGER.info(
@@ -217,7 +230,7 @@ class SerialRadioAdapter:
                             message_key,
                         )
                         return
-                    # Keep last 1000 message keys for deduplication (cleaned periodically)
+                    # Keep last 1000 message keys for deduplication
                     if len(self._recent_messages) > 1000:
                         # Clear half of old entries (simple cleanup)
                         keys = list(self._recent_messages.keys())[500:]

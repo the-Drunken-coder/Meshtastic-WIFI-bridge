@@ -86,10 +86,10 @@ def _handle_http_request(_envelope: MessageEnvelope, data: Dict[str, Any]) -> Di
         return {"error": str(exc)}
 
     # Minimize payload size over the radio: keep only status and body
+    # Note: content_length removed - can be derived from content_b64
     return {
         "status": status,
         "content_b64": base64.b64encode(content).decode("ascii"),
-        "content_length": len(content),
     }
 
 
@@ -103,17 +103,25 @@ DEFAULT_HANDLERS: Dict[str, Handler] = {
 
 class MeshtasticGateway:
     _DEFAULT_OPERATION_TIMEOUT = 30.0
+    _DEFAULT_NUMERIC_SENDER_DELAY = 0.5  # Reduced from 1.5s, configurable
 
     def __init__(
         self,
         transport: MeshtasticTransport,
         handlers: Dict[str, Handler] | None = None,
+        numeric_sender_delay: float | None = None,
     ) -> None:
         self.transport = transport
         self.handlers = handlers or DEFAULT_HANDLERS
         self._running = False
         self._metrics = get_metrics_registry()
         self._numeric_senders_seen: Set[str] = set()
+        # Configurable delay for first contact from numeric sender IDs
+        # Set to 0 to disable, or adjust based on network conditions
+        self._numeric_sender_delay = (
+            numeric_sender_delay if numeric_sender_delay is not None 
+            else self._DEFAULT_NUMERIC_SENDER_DELAY
+        )
 
     def run_once(self, timeout: float = 1.0) -> None:
         outbox_handler = getattr(self.transport, "process_outbox", None)
@@ -179,11 +187,20 @@ class MeshtasticGateway:
         )
 
         # Allow time for node discovery to complete if this is first contact
-        if sender and sender.isdigit() and not sender.startswith("!") and sender not in self._numeric_senders_seen:
+        # Delay is configurable (default 0.5s, set to 0 to disable)
+        if (
+            self._numeric_sender_delay > 0
+            and sender 
+            and sender.isdigit() 
+            and not sender.startswith("!") 
+            and sender not in self._numeric_senders_seen
+        ):
             LOGGER.info(
-                "[GATEWAY] Sender %s is numeric ID - waiting 1.5s for node discovery", sender
+                "[GATEWAY] Sender %s is numeric ID - waiting %.1fs for node discovery", 
+                sender, 
+                self._numeric_sender_delay,
             )
-            time.sleep(1.5)
+            time.sleep(self._numeric_sender_delay)
             self._numeric_senders_seen.add(sender)
 
         try:

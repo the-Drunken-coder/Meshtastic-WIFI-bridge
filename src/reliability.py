@@ -137,12 +137,15 @@ class SimpleAckNackStrategy:
             transport._handle_nack(sender, chunk_id, missing)
             return True
         if flags & FLAG_ACK:
-            # Decode full ACK ID from payload, handling empty payloads
+            # Decode full ACK ID from payload, or use chunk_id (header prefix) if empty
+            # Empty payload is an optimization for simple ACKs
             ack_id = payload.decode("utf-8", errors="replace").strip() if payload else ""
-            # Drop cached chunks; spool ack if present and ack_id is valid
+            # Drop cached chunks; spool ack if present
             transport._drop_chunk_cache(chunk_id)
-            if transport.spool and ack_id:
-                transport.spool.ack(ack_id)
+            # Use chunk_id from header if payload is empty (optimized simple ACK)
+            effective_id = ack_id if ack_id else chunk_id
+            if transport.spool and effective_id:
+                transport.spool.ack(effective_id)
                 transport._record_spool_depth()
             return True
         return False
@@ -157,7 +160,8 @@ class SimpleAckNackStrategy:
     def on_complete(
         self, sender: str, message: MessageEnvelope, transport: "MeshtasticTransport"
     ) -> None:
-        transport.radio.send(sender, build_ack_chunk(message.id))
+        # Use empty payload for simple ACK - header has 8-byte ID prefix
+        transport.radio.send(sender, build_ack_chunk(message.id, include_payload=False))
 
 
 class StageAckNackStrategy:
