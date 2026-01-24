@@ -342,12 +342,15 @@ def _is_rle_format(payload: bytes) -> bool:
     
     Returns True if the payload structure is consistent with RLE format.
     """
-    if len(payload) < 2:
+    if len(payload) < 1:
         return False
     
     count = payload[0] & 0x7F
     if count == 0:
-        return True  # Empty RLE is valid
+        return len(payload) == 1  # Empty RLE should have only count byte
+    
+    if len(payload) < 2:
+        return False
     
     offset = 1
     entries_found = 0
@@ -376,7 +379,7 @@ def _is_rle_format(payload: bytes) -> bool:
             return False
     
     # Valid RLE should consume all bytes and find exactly 'count' entries
-    return entries_found == count
+    return entries_found == count and offset == len(payload)
 
 
 def parse_nack_payload(payload: bytes) -> List[int]:

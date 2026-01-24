@@ -348,3 +348,19 @@ def test_is_rle_format_legacy_not_detected_as_rle() -> None:
     assert _is_rle_format(payload) is False
 
 
+def test_is_rle_format_extra_bytes() -> None:
+    """Test that RLE format with extra bytes is rejected."""
+    # Valid RLE with extra bytes appended
+    payload = bytes([1, 0x00]) + struct.pack("!H", 100) + b"\x00\x00"
+    assert _is_rle_format(payload) is False
+
+
+def test_parse_nack_payload_with_extra_bytes() -> None:
+    """Test that legacy format with exact structure is parsed correctly."""
+    # Legacy format with 3 sequences - should parse correctly even if structure matches RLE count
+    count = 3
+    payload = struct.pack("!BHHH", count, 10, 20, 30)
+    parsed = parse_nack_payload(payload)
+    assert parsed == [10, 20, 30]
+
+
