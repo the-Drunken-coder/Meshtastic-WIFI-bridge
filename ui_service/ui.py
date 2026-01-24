@@ -285,7 +285,9 @@ def render_ui(console: Console, backend_state: BackendState, ui_state: UIState) 
     """Render the beautiful UI."""
     layout = create_ui_layout()
     content_width = max(20, console.size.width - 20)
-    if ui_state.palette_open and ui_state.palette_options:
+    if ui_state.palette_open:
+        if ui_state.palette_options is None:
+            ui_state.palette_options = []
         ui_state.palette_index = _clamp_scroll(ui_state.palette_index, len(ui_state.palette_options), 1)
     
     # Header with logo
@@ -695,7 +697,8 @@ def _handle_palette_key(key: str, ui_state: UIState, backend: BackendService) ->
             return
         if action == "set-mode":
             mode_name = option.get("value") or "general"
-            ui_state.mode_index = (ui_state.modes or ["general"]).index(mode_name) if mode_name in (ui_state.modes or []) else 0
+            modes = ui_state.modes or ["general"]
+            ui_state.mode_index = modes.index(mode_name) if mode_name in modes else 0
             backend.set_mode(mode_name)
             _set_notice(ui_state, f"Mode set to {mode_name}")
         elif action == "health":
