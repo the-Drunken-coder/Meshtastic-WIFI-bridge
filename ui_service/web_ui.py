@@ -8,17 +8,16 @@ the mesh network.
 from __future__ import annotations
 
 import base64
-import json
+import html
 import logging
 import re
 import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
-from urllib.parse import urljoin, urlparse, urlunparse, parse_qs, urlencode
+from urllib.parse import urlparse
 
-from flask import Flask, Response, request, render_template_string, jsonify, stream_with_context
+from flask import Flask, request, render_template_string, jsonify
 
 import sys
 
@@ -34,6 +33,9 @@ from radio import build_radio
 from transport import MeshtasticTransport
 
 LOGGER = logging.getLogger(__name__)
+
+# Configuration constants
+MAX_REQUESTS = 100  # Maximum number of requests to keep in memory
 
 
 # HTML template for the web browser UI
@@ -424,19 +426,28 @@ BROWSER_HTML = '''
         }
         
         function showError(title, details) {
+            // Build static structure, fill dynamic content safely via textContent
             mainContent.innerHTML = `
                 <div class="error-screen">
                     <div class="error-icon">&#9888;</div>
-                    <h2 class="error-title">${title}</h2>
-                    <div class="error-details">${details}</div>
+                    <h2 class="error-title"></h2>
+                    <div class="error-details"></div>
                     <button class="retry-button" onclick="retryLastRequest()">Retry</button>
                 </div>
             `;
+            const titleEl = mainContent.querySelector('.error-title');
+            const detailsEl = mainContent.querySelector('.error-details');
+            if (titleEl) {
+                titleEl.textContent = title;
+            }
+            if (detailsEl) {
+                detailsEl.textContent = details;
+            }
         }
         
         function showContent(html, baseUrl) {
             // Create iframe to display content
-            mainContent.innerHTML = '<div class="browser-frame"><iframe id="contentFrame" sandbox="allow-same-origin"></iframe></div>';
+            mainContent.innerHTML = '<div class="browser-frame"><iframe id="contentFrame" sandbox="allow-same-origin allow-scripts"></iframe></div>';
             const iframe = document.getElementById('contentFrame');
             
             // Write content to iframe
@@ -560,7 +571,11 @@ BROWSER_HTML = '''
                         const bytes = data.content_length || 0;
                         const duration = data.duration || 0;
                         setStatus(`Loaded (${formatBytes(bytes)} in ${duration.toFixed(1)}s)`, 'success');
-                        setStats(`${Math.round(bytes/duration)} bytes/sec`);
+                        if (duration > 0) {
+                            setStats(`${Math.round(bytes / duration)} bytes/sec`);
+                        } else {
+                            setStats('Speed: N/A');
+                        }
                         
                         // Display the content
                         if (data.content_html) {
@@ -662,6 +677,7 @@ class MeshWebBrowser:
         self._radio_port = radio_port
         self._radio = None
         self._client: MeshtasticClient | None = None
+        self._client_lock = threading.Lock()
         
         # Track in-flight requests
         self._requests: dict[str, BrowseRequest] = {}
@@ -689,18 +705,47 @@ class MeshWebBrowser:
         
         @self.app.route('/api/browse', methods=['POST'])
         def browse():
-            data = request.get_json()
+            data = request.get_json(silent=True)
+            if not isinstance(data, dict):
+                return jsonify({"error": "Invalid or missing JSON body"}), 400
             url = data.get('url', '').strip()
             
             if not url:
                 return jsonify({"error": "URL is required"}), 400
             
-            # Normalize URL
+            # Validate and normalize URL
+            parsed = urlparse(url)
+            if parsed.scheme and parsed.scheme not in ("http", "https"):
+                return jsonify({"error": "Only http and https URLs are allowed"}), 400
             if not url.startswith(('http://', 'https://')):
                 url = 'https://' + url
             
             # Create request tracking
             with self._request_lock:
+                # Clean up old completed requests to prevent memory leak
+                if len(self._requests) > MAX_REQUESTS:
+                    # Find all completed/error requests
+                    completed = [
+                        (req_id, req) for req_id, req in self._requests.items()
+                        if req.status in ("done", "error")
+                    ]
+                    
+                    if completed:
+                        # Sort by start_time (oldest first) and remove half of them
+                        # to reduce memory while avoiding too-frequent cleanups
+                        completed.sort(key=lambda x: x[1].start_time)
+                        num_to_remove = max(1, len(completed) // 2)
+                        for req_id, _ in completed[:num_to_remove]:
+                            del self._requests[req_id]
+                    else:
+                        # No completed requests to clean up, but we're over limit.
+                        # This could happen if all requests are pending/sending.
+                        # Log a warning but allow the new request to proceed.
+                        LOGGER.warning(
+                            f"Request limit ({MAX_REQUESTS}) exceeded with no completed "
+                            f"requests to clean up. Total requests: {len(self._requests)}"
+                        )
+                
                 self._request_counter += 1
                 request_id = f"req_{self._request_counter}_{int(time.time())}"
                 browse_req = BrowseRequest(request_id=request_id, url=url)
@@ -754,16 +799,24 @@ class MeshWebBrowser:
     
     def _ensure_client(self) -> MeshtasticClient:
         """Ensure we have a working client connection."""
+        # Fast path without locking if the client is already initialized.
+        # This is thread-safe because _client is only set once (never reset to None).
+        # Reading object references in Python is atomic.
         if self._client is not None:
             return self._client
-        
-        if self._transport is None:
-            # Build our own radio/transport
-            self._radio = build_radio(False, self._radio_port, "web_browser")
-            self._transport = MeshtasticTransport(self._radio)
-        
-        self._client = MeshtasticClient(self._transport, self.gateway_node_id)
-        return self._client
+
+        # Double-checked locking to avoid initializing the client multiple times.
+        with self._client_lock:
+            if self._client is not None:
+                return self._client
+
+            if self._transport is None:
+                # Build our own radio/transport
+                self._radio = build_radio(False, self._radio_port, "web_browser")
+                self._transport = MeshtasticTransport(self._radio)
+
+            self._client = MeshtasticClient(self._transport, self.gateway_node_id)
+            return self._client
     
     def _fetch_url(self, request_id: str) -> None:
         """Fetch a URL over the mesh network."""
@@ -858,29 +911,32 @@ class MeshWebBrowser:
                     req.error = str(e)
                     req.duration = time.time() - start_time
     
-    def _rewrite_html(self, html: str, base_url: str) -> str:
+    def _rewrite_html(self, html_content: str, base_url: str) -> str:
         """Rewrite HTML to make relative URLs absolute."""
+        # Escape base_url to prevent XSS via HTML attribute injection
+        escaped_base_url = html.escape(base_url, quote=True)
+        
         # Add base tag for relative URLs
-        if '<head' in html.lower():
-            html = re.sub(
+        if '<head' in html_content.lower():
+            html_content = re.sub(
                 r'(<head[^>]*>)',
-                rf'\1<base href="{base_url}">',
-                html,
+                rf'\1<base href="{escaped_base_url}">',
+                html_content,
                 count=1,
                 flags=re.IGNORECASE
             )
-        elif '<html' in html.lower():
-            html = re.sub(
+        elif '<html' in html_content.lower():
+            html_content = re.sub(
                 r'(<html[^>]*>)',
-                rf'\1<head><base href="{base_url}"></head>',
-                html,
+                rf'\1<head><base href="{escaped_base_url}"></head>',
+                html_content,
                 count=1,
                 flags=re.IGNORECASE
             )
         else:
-            html = f'<head><base href="{base_url}"></head>' + html
+            html_content = f'<head><base href="{escaped_base_url}"></head>' + html_content
         
-        return html
+        return html_content
     
     def run(self, debug: bool = False) -> None:
         """Start the web server."""
@@ -906,7 +962,14 @@ class MeshWebBrowser:
         return thread
     
     def shutdown(self) -> None:
-        """Clean up resources."""
+        """Clean up resources for the web browser.
+
+        Note: This method only closes the underlying radio connection. It does
+        not stop the Flask development server started by ``run()`` or
+        ``run_threaded()``. The Flask server lifecycle is managed by the
+        caller (for example, via KeyboardInterrupt in ``main()`` or by process
+        termination when using a daemon thread).
+        """
         if self._radio and hasattr(self._radio, "close"):
             self._radio.close()
 

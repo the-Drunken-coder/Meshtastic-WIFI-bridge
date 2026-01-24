@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
 import sys
@@ -23,6 +24,7 @@ from rich.style import Style
 from backend_service import BackendService, BackendState
 from web_ui import MeshWebBrowser
 
+LOGGER = logging.getLogger(__name__)
 
 MESHTASTIC_LOGO = """
 ███╗   ███╗███████╗███████╗██╗  ██╗██████╗ ██████╗ ██╗██████╗  ██████╗ ███████╗
@@ -807,25 +809,39 @@ def _start_web_browser(ui_state: UIState, backend: BackendService) -> None:
     if ui_state.web_browser_started:
         return
     
+    # The web browser must reuse the backend's transport; if it is not
+    # available yet, we should not start the browser to avoid creating a
+    # second, conflicting radio connection.
+    transport = getattr(backend, "_transport", None)
+    if transport is None:
+        # Backend transport not ready; skip starting the web browser for now.
+        # This can be retried later once the backend has established its
+        # transport.
+        LOGGER.debug("Web UI not started: backend transport is not available.")
+        return
+    
     # Find an available port
     import socket
     port = ui_state.web_browser_port
+    port_found = False
     for try_port in range(port, port + 10):
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.bind(('127.0.0.1', try_port))
             sock.close()
             port = try_port
+            port_found = True
             break
         except OSError:
             continue
     
+    if not port_found:
+        LOGGER.error(f"Could not find available port in range {ui_state.web_browser_port}-{ui_state.web_browser_port + 9}")
+        return
+    
     ui_state.web_browser_port = port
     
-    # Create and start the web browser
-    # Note: We pass the backend's transport if available
-    transport = backend._transport if hasattr(backend, '_transport') else None
-    
+    # Create and start the web browser using the backend's existing transport
     ui_state.web_browser = MeshWebBrowser(
         gateway_node_id=ui_state.client_gateway_id or "!unknown",
         transport=transport,
@@ -904,14 +920,12 @@ def _handle_client_key(key: str, ui_state: UIState, backend: BackendService) -> 
     if key == "backspace":
         if ui_state.client_active_field == 0:
             ui_state.client_gateway_id = ui_state.client_gateway_id[:-1]
-            _update_web_browser_gateway(ui_state, ui_state.client_gateway_id.strip())
         else:
             ui_state.client_url = ui_state.client_url[:-1]
         return
     if len(key) == 1 and key.isprintable():
         if ui_state.client_active_field == 0:
             ui_state.client_gateway_id += key
-            _update_web_browser_gateway(ui_state, ui_state.client_gateway_id.strip())
         else:
             ui_state.client_url += key
 
