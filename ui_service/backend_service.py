@@ -52,11 +52,11 @@ class TransportWrapper:
             self._on_message(sender, envelope, progress_info)
         return sender, envelope
     
-    def send_message(self, envelope: MessageEnvelope, destination: str) -> None:
+    def send_message(self, envelope: MessageEnvelope, destination: str, **kwargs) -> None:
         """Send a message via wrapped transport."""
         if self._on_send:
             self._on_send()
-        self._transport.send_message(envelope, destination)
+        self._transport.send_message(envelope, destination, **kwargs)
     
     def should_process(self, sender: str, envelope: MessageEnvelope) -> bool:
         """Check if message should be processed."""
