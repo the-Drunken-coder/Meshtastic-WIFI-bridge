@@ -24,15 +24,15 @@ from backend_service import BackendService, BackendState
 
 
 MESHTASTIC_LOGO = """
-███╗   ███╗███████╗███████╗██╗  ██╗████████╗ █████╗ ███████╗████████╗██╗ ██████╗
-████╗ ████║██╔════╝██╔════╝██║  ██║╚══██╔══╝██╔══██╗██╔════╝╚══██╔══╝██║██╔════╝
-██╔████╔██║█████╗  ███████╗███████║   ██║   ███████║███████╗   ██║   ██║██║     
-██║╚██╔╝██║██╔══╝  ╚════██║██╔══██║   ██║   ██╔══██║╚════██║   ██║   ██║██║     
-██║ ╚═╝ ██║███████╗███████║██║  ██║   ██║   ██║  ██║███████║   ██║   ██║╚██████╗
-╚═╝     ╚═╝╚══════╝╚══════╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚══════╝   ╚═╝   ╚═╝ ╚═════╝
+███╗   ███╗███████╗███████╗██╗  ██╗██████╗ ██████╗ ██╗██████╗  ██████╗ ███████╗
+████╗ ████║██╔════╝██╔════╝██║  ██║██╔══██╗██╔══██╗██║██╔══██╗██╔════╝ ██╔════╝
+██╔████╔██║█████╗  ███████╗███████║██████╔╝██████╔╝██║██║  ██║██║  ███╗█████╗  
+██║╚██╔╝██║██╔══╝  ╚════██║██╔══██║██╔══██╗██╔══██╗██║██║  ██║██║   ██║██╔══╝  
+██║ ╚═╝ ██║███████╗███████║██║  ██║██████╔╝██║  ██║██║██████╔╝╚██████╔╝███████╗
+╚═╝     ╚═╝╚══════╝╚══════╝╚═╝  ╚═╝╚═════╝ ╚═╝  ╚═╝╚═╝╚═════╝  ╚═════╝ ╚══════╝
 """
 
-BRIDGE_SUBTITLE = "WiFi Bridge"
+BRIDGE_SUBTITLE = "Meshbridge"
 BRIDGE_VERSION = "unknown"
 
 
@@ -157,6 +157,7 @@ class UIState:
     client_notice_time: float = 0.0
     modes: list[str] = None  # type: ignore[assignment]
     mode_index: int = 0
+    palette_context: str | None = None
     palette_open: bool = False
     palette_index: int = 0
     palette_options: list[dict] = None  # type: ignore[assignment]
@@ -285,7 +286,8 @@ def render_ui(console: Console, backend_state: BackendState, ui_state: UIState) 
     layout = create_ui_layout()
     content_width = max(20, console.size.width - 20)
     if ui_state.palette_open:
-        ui_state.palette_options = _build_palette_options(ui_state, backend_state)
+        if ui_state.palette_options is None:
+            ui_state.palette_options = []
         ui_state.palette_index = _clamp_scroll(ui_state.palette_index, len(ui_state.palette_options), 1)
     
     # Header with logo
@@ -460,7 +462,17 @@ def _render_client_body(
         text.append(f"\nResponse: {backend_state.client_response}", style="green")
     if backend_state.client_error:
         text.append(f"\nError: {backend_state.client_error}", style="red")
-    if backend_state.client_last_payload:
+    if backend_state.client_last_payload_decoded:
+        decoded_lines = _wrap_payload(backend_state.client_last_payload_decoded, content_width - 8)
+        max_lines = 6
+        ui_state.client_scroll = _clamp_scroll(ui_state.client_scroll, len(decoded_lines), max_lines)
+        start = ui_state.client_scroll
+        end = min(start + max_lines, len(decoded_lines))
+        range_label = f"{start + 1}-{end} of {len(decoded_lines)}"
+        text.append(f"\nPayload ({range_label}):", style="bold cyan")
+        for line in decoded_lines[start:end]:
+            text.append(f"\n{line}", style="green")
+    elif backend_state.client_last_payload:
         payload_lines = _wrap_payload(backend_state.client_last_payload, content_width - 8)
         max_lines = 4
         ui_state.client_scroll = _clamp_scroll(ui_state.client_scroll, len(payload_lines), max_lines)
@@ -507,11 +519,50 @@ def _clamp_scroll(offset: int, total: int, window: int) -> int:
 
 def _build_palette_options(ui_state: UIState, backend_state: BackendState) -> list[dict]:
     options: list[dict] = []
+    if ui_state.palette_context == "mode":
+        for name in ui_state.modes or ["general"]:
+            options.append(
+                {
+                    "label": f"Mode: {name}",
+                    "enabled": True,
+                    "action": "set-mode",
+                    "value": name,
+                }
+            )
+        options.append({"label": "Back", "enabled": True, "action": "back"})
+        return options
+
+    if ui_state.palette_context == "radio":
+        ports = backend_state.accessible_ports or backend_state.radio_ports or []
+        if not ports:
+            options.append({"label": "No accessible radios", "enabled": False, "action": "noop"})
+        else:
+            for port in ports:
+                options.append(
+                    {
+                        "label": f"Use radio {port}",
+                        "enabled": True,
+                        "action": "set-radio",
+                        "value": port,
+                    }
+                )
+        options.append({"label": "Back", "enabled": True, "action": "back"})
+        return options
+
+    # Main palette
     options.append(
         {
-            "label": f"Change mode (current: { _current_mode_label(ui_state) })",
+            "label": f"Change mode (current: {_current_mode_label(ui_state)})",
             "enabled": True,
             "action": "mode",
+        }
+    )
+    current_radio = backend_state.radio_ports[0] if backend_state.radio_ports else "auto"
+    options.append(
+        {
+            "label": f"Select radio (current: {current_radio})",
+            "enabled": True,
+            "action": "radio",
         }
     )
     if ui_state.view == "client":
@@ -585,6 +636,22 @@ def _notice_text(ui_state: UIState, ttl_seconds: float = 3.0) -> str | None:
 
 
 def _copy_to_clipboard(text: str) -> bool:
+    # Prefer PowerShell on Windows for reliable clipboard setting
+    if os.name == "nt":
+        try:
+            import subprocess
+
+            subprocess.run(
+                ["powershell", "-NoProfile", "-Command", "Set-Clipboard", "-Value", text],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return True
+        except Exception:
+            pass
+
+    # Fallback to tkinter clipboard (works on most platforms)
     try:
         import tkinter  # type: ignore
 
@@ -596,22 +663,7 @@ def _copy_to_clipboard(text: str) -> bool:
         root.destroy()
         return True
     except Exception:
-        pass
-
-    try:
-        if os.name == "nt":
-            import subprocess
-
-            subprocess.run(
-                ["powershell", "-NoProfile", "-Command", "Set-Clipboard", "-Value", text],
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            return True
-    except Exception:
         return False
-    return False
 
 
 def _handle_palette_key(key: str, ui_state: UIState, backend: BackendService) -> None:
@@ -634,21 +686,54 @@ def _handle_palette_key(key: str, ui_state: UIState, backend: BackendService) ->
             return
         action = option.get("action")
         if action == "mode":
-            _cycle_mode(ui_state)
-            _set_notice(ui_state, f"Mode set to {_current_mode_label(ui_state)}")
+            ui_state.palette_context = "mode"
+            ui_state.palette_options = _build_palette_options(ui_state, backend.snapshot())
+            ui_state.palette_index = 0
+            return
+        if action == "radio":
+            ui_state.palette_context = "radio"
+            ui_state.palette_options = _build_palette_options(ui_state, backend.snapshot())
+            ui_state.palette_index = 0
+            return
+        if action == "set-mode":
+            mode_name = option.get("value") or "general"
+            modes = ui_state.modes or ["general"]
+            ui_state.mode_index = modes.index(mode_name) if mode_name in modes else 0
+            backend.set_mode(mode_name)
+            _set_notice(ui_state, f"Mode set to {mode_name}")
         elif action == "health":
             if ui_state.client_gateway_id:
                 backend.send_health_request(ui_state.client_gateway_id.strip())
                 _set_notice(ui_state, "Health request sent")
         elif action == "copy":
             snapshot = backend.snapshot()
-            payload = snapshot.client_last_payload or snapshot.client_response
+            payload = (
+                snapshot.client_last_payload_decoded
+                or snapshot.client_last_payload_raw
+                or snapshot.client_last_payload
+                or snapshot.client_response
+            )
             if payload:
                 ok = _copy_to_clipboard(payload)
                 _set_notice(ui_state, "Copied to clipboard" if ok else "Copy failed")
             else:
                 _set_notice(ui_state, "Nothing to copy")
+        elif action == "set-radio":
+            selected = option.get("value")
+            if selected:
+                backend.set_radio_port(selected)
+                _set_notice(ui_state, f"Radio set to {selected}")
+        elif action == "back":
+            ui_state.palette_context = None
+            ui_state.palette_options = _build_palette_options(ui_state, backend.snapshot())
+            ui_state.palette_index = 0
+            return
+        elif action == "close":
+            ui_state.palette_open = False
+            ui_state.palette_context = None
+            return
         ui_state.palette_open = False
+        ui_state.palette_context = None
 
 
 def _render_footer(ui_state: UIState) -> Text:

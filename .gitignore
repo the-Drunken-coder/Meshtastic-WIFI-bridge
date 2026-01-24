@@ -35,3 +35,6 @@ logs.text
 
 # Test results
 tools/scenario_runner/results/
+
+# Archives
+*.tgz

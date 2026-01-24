@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+import base64
 from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -52,11 +53,11 @@ class TransportWrapper:
             self._on_message(sender, envelope, progress_info)
         return sender, envelope
     
-    def send_message(self, envelope: MessageEnvelope, destination: str) -> None:
+    def send_message(self, envelope: MessageEnvelope, destination: str, **kwargs) -> None:
         """Send a message via wrapped transport."""
         if self._on_send:
             self._on_send()
-        self._transport.send_message(envelope, destination)
+        self._transport.send_message(envelope, destination, **kwargs)
     
     def should_process(self, sender: str, envelope: MessageEnvelope) -> bool:
         """Check if message should be processed."""
@@ -80,6 +81,7 @@ class TransportWrapper:
 @dataclass
 class BackendState:
     radio_ports: list[str] = field(default_factory=list)
+    accessible_ports: list[str] = field(default_factory=list)
     radio_detected: bool = False
     last_error: str | None = None
     mode: str = "idle"
@@ -99,7 +101,11 @@ class BackendState:
     client_recv_chunks_total: int = 0
     client_recv_eta_seconds: float | None = None
     client_last_payload: str | None = None
+    client_last_payload_raw: str | None = None
+    client_last_payload_decoded: str | None = None
     gateway_last_payload: str | None = None
+    gateway_last_payload_raw: str | None = None
+    gateway_last_payload_decoded: str | None = None
     gateway_last_chunks_total: int = 0
     last_rx_time: float | None = None
     last_tx_time: float | None = None
@@ -167,6 +173,16 @@ class BackendService:
         self._radio_port: str | None = None
         self._radio_error: str | None = None
         self._last_connect_attempt = 0.0
+        self._preferred_port: str | None = None
+        self._mode_name: str = "general"
+        self._mode_config: dict = _load_mode_config(self._mode_name)
+        # Cache for port accessibility probing to avoid expensive I/O on every poll.
+        # TTL of 30 seconds balances responsiveness with performance - allows detecting
+        # new ports within reasonable time while avoiding excessive serial port probing.
+        self._last_ports: list[str] = []
+        self._last_accessible: list[str] = []
+        self._last_probe_time: float = 0.0
+        self._probe_ttl_seconds: float = 30.0
 
     def start(self) -> None:
         self._thread.start()
@@ -183,6 +199,7 @@ class BackendService:
         with self._lock:
             return BackendState(
                 radio_ports=list(self._state.radio_ports),
+                accessible_ports=list(self._state.accessible_ports),
                 radio_detected=self._state.radio_detected,
                 last_error=self._state.last_error,
                 mode=self._state.mode,
@@ -202,7 +219,11 @@ class BackendService:
                 client_recv_chunks_total=self._state.client_recv_chunks_total,
                 client_recv_eta_seconds=self._state.client_recv_eta_seconds,
                 client_last_payload=self._state.client_last_payload,
+                client_last_payload_raw=self._state.client_last_payload_raw,
+                client_last_payload_decoded=self._state.client_last_payload_decoded,
                 gateway_last_payload=self._state.gateway_last_payload,
+                gateway_last_payload_raw=self._state.gateway_last_payload_raw,
+                gateway_last_payload_decoded=self._state.gateway_last_payload_decoded,
                 gateway_last_chunks_total=self._state.gateway_last_chunks_total,
                 last_rx_time=self._state.last_rx_time,
                 last_tx_time=self._state.last_tx_time,
@@ -214,6 +235,29 @@ class BackendService:
         while not self._stop_event.is_set():
             ports, error = detect_radio_ports()
             self._ensure_radio_connection(ports, error)
+            
+            # Cache for port accessibility probing to avoid expensive I/O on every poll.
+            # Re-probe ports only if the list of ports has changed or the cache is stale.
+            now = time.time()
+            if ports != self._last_ports or (now - self._last_probe_time) >= self._probe_ttl_seconds:
+                accessible: list[str] = []
+                for port in ports:
+                    if self._radio_port and port == self._radio_port:
+                        accessible.append(port)
+                        continue
+                    ok, _ = _probe_port_accessibility(port)
+                    if ok:
+                        accessible.append(port)
+                self._last_ports = list(ports)
+                self._last_accessible = list(accessible)
+                self._last_probe_time = now
+            else:
+                # Use cached accessibility results when ports are unchanged and cache is fresh.
+                accessible = list(self._last_accessible)
+            
+            # Always include the current radio port if connected
+            if self._radio_port and self._radio_port not in accessible:
+                accessible.append(self._radio_port)
             with self._lock:
                 if self._radio:
                     self._state.radio_ports = [self._radio_port] if self._radio_port else []
@@ -223,6 +267,7 @@ class BackendService:
                     self._state.radio_ports = []
                     self._state.radio_detected = False
                     self._state.last_error = self._radio_error or error
+                self._state.accessible_ports = accessible
             self._stop_event.wait(self._poll_interval)
 
     def start_gateway(self) -> None:
@@ -295,6 +340,39 @@ class BackendService:
         )
         self._client_thread.start()
 
+    def set_mode(self, mode_name: str) -> None:
+        with self._lock:
+            if mode_name == self._mode_name:
+                return
+            config = _load_mode_config(mode_name)
+            self._mode_name = mode_name
+            self._mode_config = config
+        # Rebuild transport for new settings
+        self.stop_gateway()
+        self._rebuild_transport()
+
+    def set_radio_port(self, port: str | None) -> None:
+        # Stop gateway and close current radio; next loop will reconnect using preferred port
+        self.stop_gateway()
+        self._close_radio()
+        self._preferred_port = port
+
+    def list_accessible_ports(self) -> list[str]:
+        snapshot = self.snapshot()
+        accessible = list(snapshot.accessible_ports or [])
+        # Always include current connected port
+        if self._radio_port and self._radio_port not in accessible:
+            accessible.append(self._radio_port)
+        if accessible:
+            return accessible
+        # Fallback probe if nothing cached
+        ports, _ = detect_radio_ports()
+        for port in ports:
+            ok, _ = _probe_port_accessibility(port)
+            if ok:
+                accessible.append(port)
+        return accessible
+
     def _run_gateway(self) -> None:
         try:
             transport = self._transport
@@ -345,6 +423,8 @@ class BackendService:
                 self._state.client_status = "done"
                 self._state.client_response = summary
                 self._state.client_last_payload = _format_payload(response.data)
+                self._state.client_last_payload_raw = _stringify_payload(response.data)
+                self._state.client_last_payload_decoded = _decode_content(response.data)
                 self._state.client_history = _append_history(
                     self._state.client_history,
                     f"{_timestamp()} http_request {summary}",
@@ -375,6 +455,8 @@ class BackendService:
                 self._state.client_status = "done"
                 self._state.client_response = f"{summary} ({latency:.0f} ms)"
                 self._state.client_last_payload = _format_payload(response.data)
+                self._state.client_last_payload_raw = _stringify_payload(response.data)
+                self._state.client_last_payload_decoded = _decode_content(response.data)
                 self._state.client_history = _append_history(
                     self._state.client_history,
                     f"{_timestamp()} health {summary} ({latency:.0f} ms)",
@@ -404,6 +486,8 @@ class BackendService:
             self._state.connected_radios = sorted(self._connected_radios)
             self._state.gateway_traffic = list(self._gateway_log)
             self._state.gateway_last_payload = _format_payload(envelope.data)
+            self._state.gateway_last_payload_raw = _stringify_payload(envelope.data)
+            self._state.gateway_last_payload_decoded = _decode_content(envelope.data)
             if progress and progress.get("total"):
                 self._state.gateway_last_chunks_total = int(progress["total"])
             self._state.last_rx_time = time.time()
@@ -437,13 +521,17 @@ class BackendService:
         if now - self._last_connect_attempt < 2.0:
             return
         self._last_connect_attempt = now
+        # Respect preferred port ordering
+        if self._preferred_port:
+            ordered = [self._preferred_port] + [p for p in ports if p != self._preferred_port]
+            ports = ordered
         if not ports:
             self._radio_error = error or "no radio ports detected"
             return
         try:
             radio, used_port = _open_radio_from_ports(ports, "ui")
             self._radio = radio
-            self._transport = MeshtasticTransport(radio)
+            self._transport = self._build_transport(radio)
             self._radio_port = used_port
             self._radio_error = None
             with self._lock:
@@ -458,6 +546,31 @@ class BackendService:
         self._radio_port = None
         if radio and hasattr(radio, "close"):
             radio.close()
+        with self._lock:
+            self._state.local_radio_id = None
+
+    def _rebuild_transport(self) -> None:
+        if not self._radio:
+            return
+        self._transport = self._build_transport(self._radio)
+
+    def _build_transport(self, radio: object) -> MeshtasticTransport:
+        cfg = self._mode_config or {}
+        transport_kwargs = {
+            "segment_size": int(cfg.get("transport", {}).get("segment_size", 200)),
+            "chunk_ttl_per_chunk": float(cfg.get("transport", {}).get("chunk_ttl_per_chunk", 2.0)),
+            "chunk_ttl_max": float(cfg.get("transport", {}).get("chunk_ttl_max", 600.0)),
+            "chunk_delay_threshold": cfg.get("transport", {}).get("chunk_delay_threshold", None),
+            "chunk_delay_seconds": float(cfg.get("transport", {}).get("chunk_delay_seconds", 0.0)),
+            "nack_max_per_seq": int(cfg.get("transport", {}).get("nack_max_per_seq", 5)),
+            "nack_interval": float(cfg.get("transport", {}).get("nack_interval", 1.0)),
+        }
+        reliability_method = cfg.get("reliability_method")
+        return MeshtasticTransport(
+            radio,
+            reliability=reliability_method,
+            **transport_kwargs,
+        )
 
 
 def _resolve_local_radio_id(radio: object) -> str | None:
@@ -471,6 +584,22 @@ def _resolve_local_radio_id(radio: object) -> str | None:
             if isinstance(user, dict) and user.get("id"):
                 return str(user.get("id"))
     return None
+
+
+def _probe_port_accessibility(port: str) -> tuple[bool, str | None]:
+    """Try opening a radio on the given port to verify accessibility."""
+    radio = None
+    try:
+        radio = build_radio(False, port, "probe")
+        return True, None
+    except Exception as exc:
+        return False, str(exc)
+    finally:
+        if radio and hasattr(radio, "close"):
+            try:
+                radio.close()
+            except Exception:
+                pass
 
 
 def _open_radio_from_ports(
@@ -507,13 +636,34 @@ def _summarize_response(response: MessageEnvelope) -> str:
 def _format_payload(payload: object, limit: int = 160) -> str | None:
     if payload is None:
         return None
-    try:
-        text = json.dumps(payload, ensure_ascii=True)
-    except Exception:
-        text = str(payload)
+    text = _stringify_payload(payload)
     if len(text) > limit:
         return text[: limit - 3] + "..."
     return text
+
+
+def _stringify_payload(payload: object) -> str:
+    try:
+        return json.dumps(payload, ensure_ascii=True)
+    except Exception:
+        return str(payload)
+
+
+def _decode_content(payload: object) -> str | None:
+    try:
+        if isinstance(payload, dict):
+            b64 = payload.get("content_b64")
+            if not b64 and isinstance(payload.get("result"), dict):
+                b64 = payload["result"].get("content_b64")
+            if isinstance(b64, str):
+                raw = base64.b64decode(b64)
+                try:
+                    return raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    return raw.hex()
+    except Exception:
+        return None
+    return None
 
 
 def _coerce_seconds(value: object) -> float | None:
@@ -541,3 +691,13 @@ def _get_spool_depth(transport: MeshtasticTransport | None) -> int:
         except Exception:
             return 0
     return 0
+
+
+def _load_mode_config(mode_name: str) -> dict:
+    root = Path(__file__).resolve().parent.parent
+    mode_path = root / "modes" / f"{mode_name}.json"
+    try:
+        with open(mode_path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except Exception:
+        return {}

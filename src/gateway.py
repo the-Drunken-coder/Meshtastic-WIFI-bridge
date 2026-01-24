@@ -85,9 +85,9 @@ def _handle_http_request(_envelope: MessageEnvelope, data: Dict[str, Any]) -> Di
     except Exception as exc:
         return {"error": str(exc)}
 
+    # Minimize payload size over the radio: keep only status and body
     return {
         "status": status,
-        "headers": response_headers,
         "content_b64": base64.b64encode(content).decode("ascii"),
         "content_length": len(content),
     }
