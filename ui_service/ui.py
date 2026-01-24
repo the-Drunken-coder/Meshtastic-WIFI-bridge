@@ -157,6 +157,9 @@ class UIState:
     client_notice_time: float = 0.0
     modes: list[str] = None  # type: ignore[assignment]
     mode_index: int = 0
+    palette_open: bool = False
+    palette_index: int = 0
+    palette_options: list[dict] = None  # type: ignore[assignment]
 
 
 MENU_OPTIONS = ["Open Client", "Start Gateway"]
@@ -243,6 +246,8 @@ def _read_key_windows() -> str | None:
         return "backspace"
     if ch == "\x1b":
         return "esc"
+    if ch == "\x10":  # Ctrl+P
+        return "ctrl+p"
     if ch == "\t":
         return "tab"
     return ch
@@ -262,6 +267,8 @@ def _read_key_posix() -> str | None:
             sys.stdin.read(1)
             return "pgdn"
         return "esc"
+    if ch == "\x10":
+        return "ctrl+p"
     if ch in ("\r", "\n"):
         return "enter"
     if ch == "\x7f":
@@ -277,6 +284,9 @@ def render_ui(console: Console, backend_state: BackendState, ui_state: UIState) 
     """Render the beautiful UI."""
     layout = create_ui_layout()
     content_width = max(20, console.size.width - 20)
+    if ui_state.palette_open:
+        ui_state.palette_options = _build_palette_options(ui_state, backend_state)
+        ui_state.palette_index = _clamp_scroll(ui_state.palette_index, len(ui_state.palette_options), 1)
     
     # Header with logo
     logo_text = create_gradient_text(MESHTASTIC_LOGO, "#00ffff", "#0033ff")
@@ -382,6 +392,9 @@ def _render_gateway_body(backend_state: BackendState, ui_state: UIState) -> Text
             text.append(f"{line}\n", style="dim")
     else:
         text.append("No traffic yet\n", style="dim")
+    if ui_state.palette_open:
+        text.append("\n\nCommand Palette:\n", style="bold cyan")
+        text.append(_render_palette(ui_state))
     return text
 
 
@@ -456,6 +469,9 @@ def _render_client_body(
     notice = _notice_text(ui_state)
     if notice:
         text.append(f"\n\n{notice}", style="yellow")
+    if ui_state.palette_open:
+        text.append("\n\nCommand Palette:\n", style="bold cyan")
+        text.append(_render_palette(ui_state))
     return text
 
 
@@ -482,6 +498,52 @@ def _clamp_scroll(offset: int, total: int, window: int) -> int:
         return 0
     max_offset = max(0, total - window)
     return max(0, min(offset, max_offset))
+
+
+def _build_palette_options(ui_state: UIState, backend_state: BackendState) -> list[dict]:
+    options: list[dict] = []
+    options.append(
+        {
+            "label": f"Change mode (current: { _current_mode_label(ui_state) })",
+            "enabled": True,
+            "action": "mode",
+        }
+    )
+    if ui_state.view == "client":
+        options.append(
+            {
+                "label": "Send health request",
+                "enabled": bool(ui_state.client_gateway_id.strip()),
+                "action": "health",
+            }
+        )
+        payload_available = bool(backend_state.client_last_payload or backend_state.client_response)
+        options.append(
+            {
+                "label": "Copy latest payload/response",
+                "enabled": payload_available,
+                "action": "copy",
+            }
+        )
+    options.append({"label": "Close palette", "enabled": True, "action": "close"})
+    return options
+
+
+def _render_palette(ui_state: UIState) -> Text:
+    text = Text()
+    options = ui_state.palette_options or []
+    total = len(options)
+    if not options:
+        text.append("No commands available", style="dim")
+        return text
+    ui_state.palette_index = _clamp_scroll(ui_state.palette_index, total, 1)
+    for idx, opt in enumerate(options):
+        prefix = "> " if idx == ui_state.palette_index else "  "
+        style = "bold white" if idx == ui_state.palette_index else "dim"
+        if not opt.get("enabled", True):
+            style = "grey50"
+        text.append(f"{prefix}{opt.get('label','')}\n", style=style)
+    return text
 
 
 def _format_timestamp(ts: float | None) -> str:
@@ -547,6 +609,43 @@ def _copy_to_clipboard(text: str) -> bool:
     return False
 
 
+def _handle_palette_key(key: str, ui_state: UIState, backend: BackendService) -> None:
+    options = ui_state.palette_options or []
+    if not options:
+        ui_state.palette_open = False
+        return
+    if key == "up":
+        ui_state.palette_index = max(0, ui_state.palette_index - 1)
+        return
+    if key == "down":
+        ui_state.palette_index = min(len(options) - 1, ui_state.palette_index + 1)
+        return
+    if key in {"esc", "q"}:
+        ui_state.palette_open = False
+        return
+    if key == "enter":
+        option = options[ui_state.palette_index]
+        if not option.get("enabled", True):
+            return
+        action = option.get("action")
+        if action == "mode":
+            _cycle_mode(ui_state)
+            _set_notice(ui_state, f"Mode set to {_current_mode_label(ui_state)}")
+        elif action == "health":
+            if ui_state.client_gateway_id:
+                backend.send_health_request(ui_state.client_gateway_id.strip())
+                _set_notice(ui_state, "Health request sent")
+        elif action == "copy":
+            snapshot = backend.snapshot()
+            payload = snapshot.client_last_payload or snapshot.client_response
+            if payload:
+                ok = _copy_to_clipboard(payload)
+                _set_notice(ui_state, "Copied to clipboard" if ok else "Copy failed")
+            else:
+                _set_notice(ui_state, "Nothing to copy")
+        ui_state.palette_open = False
+
+
 def _render_footer(ui_state: UIState) -> Text:
     text = Text()
     text.append("Ctrl+C", style="bold white")
@@ -566,25 +665,31 @@ def _render_footer(ui_state: UIState) -> Text:
         text.append("Enter", style="bold white")
         text.append(" to submit", style="dim")
         text.append(", ", style="dim")
-        text.append("H", style="bold white")
-        text.append(" for health", style="dim")
-        text.append(", ", style="dim")
-        text.append("C", style="bold white")
-        text.append(" to copy", style="dim")
-        text.append(", ", style="dim")
         text.append("Esc", style="bold white")
         text.append(" to menu", style="dim")
         text.append(", ", style="dim")
         text.append("PgUp/PgDn", style="bold white")
         text.append(" to scroll", style="dim")
     text.append(" | ", style="dim")
-    text.append("M to change mode", style="dim")
+    text.append("Ctrl+P for commands", style="dim")
     text.append(" | ", style="dim")
     text.append(f"v{BRIDGE_VERSION}", style="dim")
     return text
 
 
 def _handle_key(key: str, ui_state: UIState, backend: BackendService) -> None:
+    if key == "ctrl+p":
+        if ui_state.palette_open:
+            ui_state.palette_open = False
+        else:
+            ui_state.palette_open = True
+            ui_state.palette_options = _build_palette_options(ui_state, backend.snapshot())
+            ui_state.palette_index = 0
+        return
+    if ui_state.palette_open:
+        _handle_palette_key(key, ui_state, backend)
+        return
+
     if ui_state.view == "menu":
         _handle_menu_key(key, ui_state, backend)
         return
@@ -602,9 +707,6 @@ def _handle_menu_key(key: str, ui_state: UIState, backend: BackendService) -> No
         ui_state.menu_index = (ui_state.menu_index - 1) % len(MENU_OPTIONS)
     elif key == "down":
         ui_state.menu_index = (ui_state.menu_index + 1) % len(MENU_OPTIONS)
-    elif key.lower() == "m":
-        _cycle_mode(ui_state)
-        _set_notice(ui_state, f"Mode set to {_current_mode_label(ui_state)}")
     elif key == "enter":
         if not backend.snapshot().radio_detected:
             return
@@ -621,26 +723,6 @@ def _handle_menu_key(key: str, ui_state: UIState, backend: BackendService) -> No
 def _handle_client_key(key: str, ui_state: UIState, backend: BackendService) -> None:
     if key in {"esc", "q"}:
         ui_state.view = "menu"
-        return
-    if key.lower() == "m":
-        _cycle_mode(ui_state)
-        _set_notice(ui_state, f"Mode set to {_current_mode_label(ui_state)}")
-        return
-    if key.lower() == "h":
-        if ui_state.client_gateway_id:
-            backend.send_health_request(ui_state.client_gateway_id.strip())
-            _set_notice(ui_state, "Health request sent")
-        else:
-            _set_notice(ui_state, "Gateway ID required for health")
-        return
-    if key.lower() == "c":
-        snapshot = backend.snapshot()
-        payload = snapshot.client_last_payload or snapshot.client_response
-        if payload:
-            ok = _copy_to_clipboard(payload)
-            _set_notice(ui_state, "Copied to clipboard" if ok else "Copy failed")
-        else:
-            _set_notice(ui_state, "Nothing to copy")
         return
     if key == "pgup":
         ui_state.client_scroll = max(0, ui_state.client_scroll - 1)
