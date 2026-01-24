@@ -150,6 +150,40 @@ if (args[0] === "update") {
   process.exit(0);
 }
 
+if (args[0] === "install-deps") {
+  const requirements = path.resolve(__dirname, "..", "requirements.txt");
+  if (!fs.existsSync(requirements)) {
+    console.error("meshbridge: requirements.txt not found in package.");
+    process.exit(1);
+  }
+  const pythonForDeps = resolvePython();
+  if (!pythonForDeps) {
+    console.error(
+      "meshbridge: Python 3 not found. Set MESHTASTIC_BRIDGE_PYTHON to a python executable."
+    );
+    process.exit(1);
+  }
+  console.log(`meshbridge: installing Python deps from ${requirements}`);
+  const pipInstall = spawnSync(
+    pythonForDeps.cmd,
+    [...pythonForDeps.args, "-m", "pip", "install", "-r", requirements],
+    { stdio: "inherit" }
+  );
+  if (pipInstall.error) {
+    console.error(`meshbridge: pip failed (${pipInstall.error.message})`);
+    process.exit(1);
+  }
+  if (pipInstall.status !== 0) {
+    console.error(
+      `meshbridge: pip exited with code ${pipInstall.status}. ` +
+        "Try running the command manually."
+    );
+    process.exit(pipInstall.status ?? 1);
+  }
+  console.log("meshbridge: dependencies installed");
+  process.exit(0);
+}
+
 function runNpm(args, options = {}) {
   const cli = resolveNpmCli();
   if (!cli) {
