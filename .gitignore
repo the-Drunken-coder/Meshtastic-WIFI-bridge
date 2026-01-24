@@ -14,6 +14,10 @@ venv/
 env/
 ENV/
 
+# Node.js
+node_modules/
+package-lock.json
+
 # Tooling caches
 .pytest_cache/
 .mypy_cache/
@@ -32,6 +36,7 @@ Thumbs.db
 
 # Logs
 logs.text
+*.log
 
 # Test results
 tools/scenario_runner/results/

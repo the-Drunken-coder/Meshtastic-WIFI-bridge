@@ -13,6 +13,8 @@ from message import MessageEnvelope
 from metrics import DEFAULT_LATENCY_BUCKETS, get_metrics_registry
 from transport import MeshtasticTransport
 
+__all__ = ["MeshtasticGateway", "Handler", "DEFAULT_HANDLERS"]
+
 LOGGER = logging.getLogger(__name__)
 
 

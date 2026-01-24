@@ -12,6 +12,8 @@ from typing import Dict, List, Tuple
 
 from message import MessageEnvelope
 
+__all__ = ["SpoolEntry", "PersistentSpool"]
+
 
 @dataclass
 class SpoolEntry:

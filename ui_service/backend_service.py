@@ -28,6 +28,13 @@ from message import MessageEnvelope
 from radio import build_radio
 from transport import MeshtasticTransport
 
+__all__ = [
+    "TransportWrapper",
+    "BackendState",
+    "BackendService",
+    "detect_radio_ports",
+]
+
 
 class TransportWrapper:
     """Wrapper for MeshtasticTransport that allows observing received messages."""
