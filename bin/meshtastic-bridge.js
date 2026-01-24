@@ -90,6 +90,10 @@ if (args[0] === "update") {
   const update = spawnSync("npm", ["install", "-g", "meshtastic-bridge"], {
     stdio: "inherit",
   });
+  if (update.error) {
+    console.error(`meshbridge: update failed (${update.error.message})`);
+    process.exit(1);
+  }
   if (update.status !== 0) {
     console.error(`meshbridge: update failed (code ${update.status})`);
     process.exit(update.status ?? 1);
