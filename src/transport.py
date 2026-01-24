@@ -177,7 +177,9 @@ class MeshtasticTransport:
         # Burst mode configuration for faster chunk transmission
         # burst_size: how many chunks to send before yielding (higher = faster but may overwhelm radio)
         # burst_delay: small pause between bursts to allow radio buffer processing
-        self._burst_size = max(1, burst_size)
+        # Cap burst_size to prevent overwhelming the radio buffer
+        MAX_BURST_SIZE = 20
+        self._burst_size = max(1, min(burst_size, MAX_BURST_SIZE))
         self._burst_delay = max(0.0, burst_delay)
         
         # Internal state for non-blocking transport
@@ -344,7 +346,9 @@ class MeshtasticTransport:
 
         # 3. Send a burst of chunks (up to _burst_size)
         chunks_sent_in_burst = 0
-        while next_seq <= total_chunks and chunks_sent_in_burst < self._burst_size:
+        for _ in range(self._burst_size):
+            if next_seq > total_chunks:
+                break
             chunk = chunks[next_seq - 1]  # seq is 1-based
             
             try:
@@ -374,9 +378,10 @@ class MeshtasticTransport:
         self.spool.touch(msg_id)
         
         # Apply burst delay if we sent a full burst and more chunks remain
-        if chunks_sent_in_burst == self._burst_size and next_seq <= total_chunks:
-            if self._burst_delay > 0:
-                time.sleep(self._burst_delay)
+        if (self._burst_delay > 0 
+            and chunks_sent_in_burst == self._burst_size 
+            and next_seq <= total_chunks):
+            time.sleep(self._burst_delay)
 
 
 
@@ -460,10 +465,9 @@ class MeshtasticTransport:
                 # Apply delays: either explicit chunk_delay or burst-based pacing
                 if chunk_delay > 0:
                     time.sleep(chunk_delay)
-                elif idx % self._burst_size == 0 and idx < total_chunks:
+                elif self._burst_delay > 0 and idx % self._burst_size == 0 and idx < total_chunks:
                     # Small pause between bursts to allow radio buffer processing
-                    if self._burst_delay > 0:
-                        time.sleep(self._burst_delay)
+                    time.sleep(self._burst_delay)
                         
             self._metrics.inc(
                 "transport_messages_total",

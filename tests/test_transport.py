@@ -358,3 +358,31 @@ def test_transport_burst_mode_caches_chunks_for_nack() -> None:
     assert message_prefix in sender_transport._chunk_cache
     assert len(sender_transport._chunk_cache[message_prefix]) > 0
 
+
+def test_transport_burst_size_capped_at_maximum() -> None:
+    """Test that burst_size is capped at maximum to prevent radio buffer overflow."""
+    radio = InMemoryRadio("test-node")
+    
+    # Try to set an excessively large burst size
+    transport = MeshtasticTransport(
+        radio=radio,
+        burst_size=100,  # Way too large
+    )
+    
+    # Should be capped at 20 (MAX_BURST_SIZE)
+    assert transport._burst_size == 20
+
+
+def test_transport_burst_size_minimum_enforced() -> None:
+    """Test that burst_size has a minimum of 1."""
+    radio = InMemoryRadio("test-node")
+    
+    # Try to set burst size to 0
+    transport = MeshtasticTransport(
+        radio=radio,
+        burst_size=0,
+    )
+    
+    # Should be at least 1
+    assert transport._burst_size == 1
+
