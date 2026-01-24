@@ -16,15 +16,18 @@ jobs:
         os: [ubuntu-latest, macos-latest]
 
     steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
     - name: Set up Node.js
       uses: actions/setup-node@v4
       with:
         node-version: '20'
 
-    - name: Install old version (0.1.20)
-      run: npm install -g meshtastic-bridge@0.1.20
+    - name: Install local version
+      run: npm install -g .
 
-    - name: Verify old version installed
+    - name: Verify local version installed
       run: |
         echo "Checking installed version..."
         npm list -g meshtastic-bridge --depth=0
@@ -42,15 +45,18 @@ jobs:
     runs-on: windows-latest
 
     steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
     - name: Set up Node.js
       uses: actions/setup-node@v4
       with:
         node-version: '20'
 
-    - name: Install old version (0.1.20)
-      run: npm install -g meshtastic-bridge@0.1.20
+    - name: Install local version
+      run: npm install -g .
 
-    - name: Verify old version installed
+    - name: Verify local version installed
       run: |
         echo "Checking installed version..."
         npm list -g meshtastic-bridge --depth=0
