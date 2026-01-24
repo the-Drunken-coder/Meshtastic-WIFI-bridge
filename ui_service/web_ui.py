@@ -32,6 +32,8 @@ from client import MeshtasticClient
 from radio import build_radio
 from transport import MeshtasticTransport
 
+__all__ = ["BrowseRequest", "MeshWebBrowser"]
+
 LOGGER = logging.getLogger(__name__)
 
 # Configuration constants
