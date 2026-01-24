@@ -80,6 +80,7 @@ class TransportWrapper:
 @dataclass
 class BackendState:
     radio_ports: list[str] = field(default_factory=list)
+    accessible_ports: list[str] = field(default_factory=list)
     radio_detected: bool = False
     last_error: str | None = None
     mode: str = "idle"
@@ -167,6 +168,9 @@ class BackendService:
         self._radio_port: str | None = None
         self._radio_error: str | None = None
         self._last_connect_attempt = 0.0
+        self._preferred_port: str | None = None
+        self._mode_name: str = "general"
+        self._mode_config: dict = _load_mode_config(self._mode_name)
 
     def start(self) -> None:
         self._thread.start()
@@ -183,6 +187,7 @@ class BackendService:
         with self._lock:
             return BackendState(
                 radio_ports=list(self._state.radio_ports),
+                accessible_ports=list(getattr(self._state, "accessible_ports", [])),
                 radio_detected=self._state.radio_detected,
                 last_error=self._state.last_error,
                 mode=self._state.mode,
@@ -214,6 +219,11 @@ class BackendService:
         while not self._stop_event.is_set():
             ports, error = detect_radio_ports()
             self._ensure_radio_connection(ports, error)
+            accessible: list[str] = []
+            for port in ports:
+                ok, _ = _probe_port_accessibility(port)
+                if ok:
+                    accessible.append(port)
             with self._lock:
                 if self._radio:
                     self._state.radio_ports = [self._radio_port] if self._radio_port else []
@@ -223,6 +233,7 @@ class BackendService:
                     self._state.radio_ports = []
                     self._state.radio_detected = False
                     self._state.last_error = self._radio_error or error
+                self._state.accessible_ports = accessible
             self._stop_event.wait(self._poll_interval)
 
     def start_gateway(self) -> None:
@@ -294,6 +305,33 @@ class BackendService:
             name="meshtastic-client-health",
         )
         self._client_thread.start()
+
+    def set_mode(self, mode_name: str) -> None:
+        with self._lock:
+            if mode_name == self._mode_name:
+                return
+        config = _load_mode_config(mode_name)
+        with self._lock:
+            self._mode_name = mode_name
+            self._mode_config = config
+        # Rebuild transport for new settings
+        self.stop_gateway()
+        self._rebuild_transport()
+
+    def set_radio_port(self, port: str | None) -> None:
+        # Stop gateway and close current radio; next loop will reconnect using preferred port
+        self.stop_gateway()
+        self._close_radio()
+        self._preferred_port = port
+
+    def list_accessible_ports(self) -> list[str]:
+        ports, _ = detect_radio_ports()
+        accessible: list[str] = []
+        for port in ports:
+            ok, _ = _probe_port_accessibility(port)
+            if ok:
+                accessible.append(port)
+        return accessible
 
     def _run_gateway(self) -> None:
         try:
@@ -437,13 +475,17 @@ class BackendService:
         if now - self._last_connect_attempt < 2.0:
             return
         self._last_connect_attempt = now
+        # Respect preferred port ordering
+        if self._preferred_port:
+            ordered = [self._preferred_port] + [p for p in ports if p != self._preferred_port]
+            ports = ordered
         if not ports:
             self._radio_error = error or "no radio ports detected"
             return
         try:
             radio, used_port = _open_radio_from_ports(ports, "ui")
             self._radio = radio
-            self._transport = MeshtasticTransport(radio)
+            self._transport = self._build_transport(radio)
             self._radio_port = used_port
             self._radio_error = None
             with self._lock:
@@ -458,6 +500,31 @@ class BackendService:
         self._radio_port = None
         if radio and hasattr(radio, "close"):
             radio.close()
+        with self._lock:
+            self._state.local_radio_id = None
+
+    def _rebuild_transport(self) -> None:
+        if not self._radio:
+            return
+        self._transport = self._build_transport(self._radio)
+
+    def _build_transport(self, radio: object) -> MeshtasticTransport:
+        cfg = self._mode_config or {}
+        transport_kwargs = {
+            "segment_size": int(cfg.get("transport", {}).get("segment_size", 200)),
+            "chunk_ttl_per_chunk": float(cfg.get("transport", {}).get("chunk_ttl_per_chunk", 2.0)),
+            "chunk_ttl_max": float(cfg.get("transport", {}).get("chunk_ttl_max", 600.0)),
+            "chunk_delay_threshold": cfg.get("transport", {}).get("chunk_delay_threshold", None),
+            "chunk_delay_seconds": float(cfg.get("transport", {}).get("chunk_delay_seconds", 0.0)),
+            "nack_max_per_seq": int(cfg.get("transport", {}).get("nack_max_per_seq", 5)),
+            "nack_interval": float(cfg.get("transport", {}).get("nack_interval", 1.0)),
+        }
+        reliability_method = cfg.get("reliability_method")
+        return MeshtasticTransport(
+            radio,
+            reliability=reliability_method,
+            **transport_kwargs,
+        )
 
 
 def _resolve_local_radio_id(radio: object) -> str | None:
@@ -471,6 +538,22 @@ def _resolve_local_radio_id(radio: object) -> str | None:
             if isinstance(user, dict) and user.get("id"):
                 return str(user.get("id"))
     return None
+
+
+def _probe_port_accessibility(port: str) -> tuple[bool, str | None]:
+    """Try opening a radio on the given port to verify accessibility."""
+    radio = None
+    try:
+        radio = build_radio(False, port, "probe")
+        return True, None
+    except Exception as exc:
+        return False, str(exc)
+    finally:
+        if radio and hasattr(radio, "close"):
+            try:
+                radio.close()
+            except Exception:
+                pass
 
 
 def _open_radio_from_ports(
@@ -541,3 +624,13 @@ def _get_spool_depth(transport: MeshtasticTransport | None) -> int:
         except Exception:
             return 0
     return 0
+
+
+def _load_mode_config(mode_name: str) -> dict:
+    root = Path(__file__).resolve().parent.parent
+    mode_path = root / "modes" / f"{mode_name}.json"
+    try:
+        with open(mode_path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except Exception:
+        return {}

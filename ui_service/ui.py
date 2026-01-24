@@ -157,6 +157,7 @@ class UIState:
     client_notice_time: float = 0.0
     modes: list[str] = None  # type: ignore[assignment]
     mode_index: int = 0
+    palette_context: str | None = None
     palette_open: bool = False
     palette_index: int = 0
     palette_options: list[dict] = None  # type: ignore[assignment]
@@ -284,8 +285,7 @@ def render_ui(console: Console, backend_state: BackendState, ui_state: UIState) 
     """Render the beautiful UI."""
     layout = create_ui_layout()
     content_width = max(20, console.size.width - 20)
-    if ui_state.palette_open:
-        ui_state.palette_options = _build_palette_options(ui_state, backend_state)
+    if ui_state.palette_open and ui_state.palette_options:
         ui_state.palette_index = _clamp_scroll(ui_state.palette_index, len(ui_state.palette_options), 1)
     
     # Header with logo
@@ -507,11 +507,50 @@ def _clamp_scroll(offset: int, total: int, window: int) -> int:
 
 def _build_palette_options(ui_state: UIState, backend_state: BackendState) -> list[dict]:
     options: list[dict] = []
+    if ui_state.palette_context == "mode":
+        for name in ui_state.modes or ["general"]:
+            options.append(
+                {
+                    "label": f"Mode: {name}",
+                    "enabled": True,
+                    "action": "set-mode",
+                    "value": name,
+                }
+            )
+        options.append({"label": "Back", "enabled": True, "action": "back"})
+        return options
+
+    if ui_state.palette_context == "radio":
+        ports = backend_state.accessible_ports or backend_state.radio_ports or []
+        if not ports:
+            options.append({"label": "No accessible radios", "enabled": False, "action": "noop"})
+        else:
+            for port in ports:
+                options.append(
+                    {
+                        "label": f"Use radio {port}",
+                        "enabled": True,
+                        "action": "set-radio",
+                        "value": port,
+                    }
+                )
+        options.append({"label": "Back", "enabled": True, "action": "back"})
+        return options
+
+    # Main palette
     options.append(
         {
-            "label": f"Change mode (current: { _current_mode_label(ui_state) })",
+            "label": f"Change mode (current: {_current_mode_label(ui_state)})",
             "enabled": True,
             "action": "mode",
+        }
+    )
+    current_radio = backend_state.radio_ports[0] if backend_state.radio_ports else "auto"
+    options.append(
+        {
+            "label": f"Select radio (current: {current_radio})",
+            "enabled": True,
+            "action": "radio",
         }
     )
     if ui_state.view == "client":
@@ -634,8 +673,20 @@ def _handle_palette_key(key: str, ui_state: UIState, backend: BackendService) ->
             return
         action = option.get("action")
         if action == "mode":
-            _cycle_mode(ui_state)
-            _set_notice(ui_state, f"Mode set to {_current_mode_label(ui_state)}")
+            ui_state.palette_context = "mode"
+            ui_state.palette_options = _build_palette_options(ui_state, backend.snapshot())
+            ui_state.palette_index = 0
+            return
+        if action == "radio":
+            ui_state.palette_context = "radio"
+            ui_state.palette_options = _build_palette_options(ui_state, backend.snapshot())
+            ui_state.palette_index = 0
+            return
+        if action == "set-mode":
+            mode_name = option.get("value") or "general"
+            ui_state.mode_index = (ui_state.modes or ["general"]).index(mode_name) if mode_name in (ui_state.modes or []) else 0
+            backend.set_mode(mode_name)
+            _set_notice(ui_state, f"Mode set to {mode_name}")
         elif action == "health":
             if ui_state.client_gateway_id:
                 backend.send_health_request(ui_state.client_gateway_id.strip())
@@ -648,7 +699,22 @@ def _handle_palette_key(key: str, ui_state: UIState, backend: BackendService) ->
                 _set_notice(ui_state, "Copied to clipboard" if ok else "Copy failed")
             else:
                 _set_notice(ui_state, "Nothing to copy")
+        elif action == "set-radio":
+            selected = option.get("value")
+            if selected:
+                backend.set_radio_port(selected)
+                _set_notice(ui_state, f"Radio set to {selected}")
+        elif action == "back":
+            ui_state.palette_context = None
+            ui_state.palette_options = _build_palette_options(ui_state, backend.snapshot())
+            ui_state.palette_index = 0
+            return
+        elif action == "close":
+            ui_state.palette_open = False
+            ui_state.palette_context = None
+            return
         ui_state.palette_open = False
+        ui_state.palette_context = None
 
 
 def _render_footer(ui_state: UIState) -> Text:
