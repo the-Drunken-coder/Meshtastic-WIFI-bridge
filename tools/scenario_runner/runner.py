@@ -310,8 +310,9 @@ def run_scenario(
     gateway_node_id = resolve_gateway_node_id(config, gateway_transport)
     retarget_spool_destination(client_transport, gateway_node_id)
 
-    gateway, gateway_thread = start_gateway(transport=gateway_transport)
-    client = MeshtasticClient(client_transport, gateway_node_id=gateway_node_id)
+    mode_config = config.get("_mode_profile", {})
+    gateway, gateway_thread = start_gateway(transport=gateway_transport, mode_config=mode_config)
+    client = MeshtasticClient(client_transport, gateway_node_id=gateway_node_id, mode_config=mode_config)
 
     try:
         status, duration, req_bytes, resp_bytes, error, resp_data, response_id = run_single_test(

@@ -842,11 +842,15 @@ def _start_web_browser(ui_state: UIState, backend: BackendService) -> None:
     ui_state.web_browser_port = port
     
     # Create and start the web browser using the backend's existing transport
+    mode_cfg = backend.get_mode_config()
+    browse_timeout = float(mode_cfg.get("timeout", 300.0)) if isinstance(mode_cfg, dict) else 300.0
+
     ui_state.web_browser = MeshWebBrowser(
         gateway_node_id=ui_state.client_gateway_id or "!unknown",
         transport=transport,
         host="127.0.0.1",
         port=port,
+        request_timeout=browse_timeout,
     )
     
     # Start in background thread

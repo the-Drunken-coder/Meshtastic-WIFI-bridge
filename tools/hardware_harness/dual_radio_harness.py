@@ -415,9 +415,10 @@ def main() -> None:
     )
     retarget_spool_destination(client_transport, gateway_node_id)
 
-    gateway, gateway_thread = start_gateway(transport=gateway_transport)
+    mode_config = config.get("_mode_profile", {})
+    gateway, gateway_thread = start_gateway(transport=gateway_transport, mode_config=mode_config)
 
-    client = MeshtasticClient(client_transport, gateway_node_id=gateway_node_id)
+    client = MeshtasticClient(client_transport, gateway_node_id=gateway_node_id, mode_config=mode_config)
 
     diagnostics: List[Dict[str, Any]] = []
     try:

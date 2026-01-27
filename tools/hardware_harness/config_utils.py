@@ -32,7 +32,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "log_file": None,
     "simulate": False,
     "disable_dedupe": False,
-    "dedupe_lease_seconds": 8.0,
+    "dedupe_lease_seconds": None,  # Use mode config value
     "spool_dir": os.path.expanduser("~/.meshtastic_bridge_harness"),
     "post_response_quiet": None,
     "post_response_timeout": None,
@@ -118,10 +118,18 @@ def load_config(path: str, mode_override: Optional[str] = None) -> Dict[str, Any
         if key in profile:
             config[key] = profile[key]
 
-    # Transport defaults
+    # Transport defaults (including dedupe_lease_seconds)
     transport_overrides = profile.get("transport", {}) if isinstance(profile, dict) else {}
     if isinstance(transport_overrides, dict):
         TRANSPORT_DEFAULTS.update(transport_overrides)
+
+    # Apply dedupe_lease_seconds from transport config if not explicitly set
+    if config.get("dedupe_lease_seconds") is None and "dedupe_lease_seconds" in TRANSPORT_DEFAULTS:
+        config["dedupe_lease_seconds"] = TRANSPORT_DEFAULTS["dedupe_lease_seconds"]
+
+    # Store the full mode profile for components that need it
+    config["_mode_profile"] = profile
+
     return config
 
 

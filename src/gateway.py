@@ -126,25 +126,38 @@ DEFAULT_HANDLERS: Dict[str, Handler] = {
 
 
 class MeshtasticGateway:
+    # Default values (used when mode config is not provided)
     _DEFAULT_OPERATION_TIMEOUT = 30.0
-    _DEFAULT_NUMERIC_SENDER_DELAY = 0.5  # Reduced from 1.5s, configurable
+    _DEFAULT_NUMERIC_SENDER_DELAY = 0.5
 
     def __init__(
         self,
         transport: MeshtasticTransport,
         handlers: Dict[str, Handler] | None = None,
         numeric_sender_delay: float | None = None,
+        mode_config: Dict[str, Any] | None = None,
     ) -> None:
         self.transport = transport
         self.handlers = handlers or DEFAULT_HANDLERS
         self._running = False
         self._metrics = get_metrics_registry()
         self._numeric_senders_seen: Set[str] = set()
+
+        # Load gateway config from mode profile
+        self._mode_config = mode_config or {}
+        gateway_cfg = self._mode_config.get("gateway", {})
+
         # Configurable delay for first contact from numeric sender IDs
         # Set to 0 to disable, or adjust based on network conditions
-        self._numeric_sender_delay = (
-            numeric_sender_delay if numeric_sender_delay is not None 
-            else self._DEFAULT_NUMERIC_SENDER_DELAY
+        if numeric_sender_delay is not None:
+            self._numeric_sender_delay = numeric_sender_delay
+        else:
+            self._numeric_sender_delay = float(
+                gateway_cfg.get("numeric_sender_delay", self._DEFAULT_NUMERIC_SENDER_DELAY)
+            )
+
+        self._operation_timeout = float(
+            gateway_cfg.get("operation_timeout", self._DEFAULT_OPERATION_TIMEOUT)
         )
 
     def run_once(self, timeout: float = 1.0) -> None:
