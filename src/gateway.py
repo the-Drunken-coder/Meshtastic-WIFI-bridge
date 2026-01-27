@@ -48,10 +48,32 @@ def _handle_http_request(_envelope: MessageEnvelope, data: Dict[str, Any]) -> Di
     if not url:
         return {"error": "url is required"}
 
+    # Default headers mimic a modern desktop browser so Cloudflare/other CDNs
+    # don't flag our Python client as a bot (the stock Python-urllib UA was
+    # getting 1010/403 responses for some sites).
+    DEFAULT_HEADERS = {
+        "user-agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "accept-language": "en-US,en;q=0.9",
+    }
+
     method = str(data.get("method", "GET")).upper()
     headers = data.get("headers") or {}
     if not isinstance(headers, dict):
         headers = {}
+    else:
+        # Normalize header keys/values to strings
+        headers = {str(k): str(v) for k, v in headers.items()}
+
+    # Add defaults only when the caller didn't supply their own value
+    lowered = {k.lower() for k in headers}
+    for key, value in DEFAULT_HEADERS.items():
+        if key.lower() not in lowered:
+            headers[key] = value
 
     timeout = float(data.get("timeout", 20.0))
     body = None
