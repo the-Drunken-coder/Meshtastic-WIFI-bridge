@@ -13,9 +13,13 @@ from transport import MeshtasticTransport
 __all__ = ["MeshtasticClient"]
 
 LOGGER = logging.getLogger(__name__)
-BACKOFF_BASE_SECONDS = 0.5
-BACKOFF_JITTER_FACTOR = 0.2
-BACKOFF_MAX_SECONDS = 30.0
+
+# Default values (used when mode config is not provided)
+_DEFAULT_BACKOFF_BASE_SECONDS = 0.5
+_DEFAULT_BACKOFF_JITTER_FACTOR = 0.2
+_DEFAULT_BACKOFF_MAX_SECONDS = 30.0
+_DEFAULT_TIMEOUT = 30.0
+_DEFAULT_RETRIES = 2
 
 
 class MeshtasticClient:
@@ -23,10 +27,20 @@ class MeshtasticClient:
         self,
         transport: MeshtasticTransport,
         gateway_node_id: str,
+        mode_config: Dict[str, Any] | None = None,
     ) -> None:
         self.transport = transport
         self.gateway_node_id = gateway_node_id
         self._metrics = get_metrics_registry()
+
+        # Load client config from mode profile
+        self._mode_config = mode_config or {}
+        client_cfg = self._mode_config.get("client", {})
+        self._backoff_base = float(client_cfg.get("backoff_base_seconds", _DEFAULT_BACKOFF_BASE_SECONDS))
+        self._backoff_jitter = float(client_cfg.get("backoff_jitter_factor", _DEFAULT_BACKOFF_JITTER_FACTOR))
+        self._backoff_max = float(client_cfg.get("backoff_max_seconds", _DEFAULT_BACKOFF_MAX_SECONDS))
+        self._default_timeout = float(self._mode_config.get("timeout", _DEFAULT_TIMEOUT))
+        self._default_retries = int(self._mode_config.get("retries", _DEFAULT_RETRIES))
 
     def echo(
         self,
@@ -96,10 +110,15 @@ class MeshtasticClient:
         self,
         command: str,
         data: Dict[str, Any] | None = None,
-        timeout: float = 30.0,
-        max_retries: int = 2,
+        timeout: float | None = None,
+        max_retries: int | None = None,
         progress_callback: Callable[[Dict[str, Any]], None] | None = None,
     ) -> MessageEnvelope:
+        # Use mode config defaults if not explicitly provided
+        if timeout is None:
+            timeout = self._default_timeout
+        if max_retries is None:
+            max_retries = self._default_retries
         request_start = time.time()
         envelope = MessageEnvelope(
             id=uuid.uuid4().hex[:20],
@@ -146,9 +165,9 @@ class MeshtasticClient:
         for attempt in range(max_retries + 1):
             if attempt > 0:
                 # Adaptive exponential backoff with jitter
-                backoff = BACKOFF_BASE_SECONDS * (2 ** (attempt - 1))
-                backoff += random.uniform(0, backoff * BACKOFF_JITTER_FACTOR)
-                backoff = min(backoff, BACKOFF_MAX_SECONDS)
+                backoff = self._backoff_base * (2 ** (attempt - 1))
+                backoff += random.uniform(0, backoff * self._backoff_jitter)
+                backoff = min(backoff, self._backoff_max)
                 LOGGER.info(
                     "[CLIENT] Retry attempt %d/%d for request %s (backoff %.2fs)",
                     attempt,

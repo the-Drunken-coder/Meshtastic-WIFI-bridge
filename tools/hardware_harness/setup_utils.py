@@ -63,8 +63,9 @@ def build_transport(
 
 def start_gateway(
     transport: MeshtasticTransport,
+    mode_config: dict | None = None,
 ) -> Tuple[MeshtasticGateway, threading.Thread]:
-    gateway = MeshtasticGateway(transport)
+    gateway = MeshtasticGateway(transport, mode_config=mode_config)
 
     thread = threading.Thread(target=gateway.run_forever, daemon=True, name="meshtastic-gateway")
     thread.start()

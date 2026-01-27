@@ -3,17 +3,28 @@
   "description": "Balanced defaults: windowed reliability, moderate timeouts, and conservative NACK pacing.",
   "reliability_method": "window",
   "modem_preset": "MEDIUM_SLOW",
-  "timeout": 300.0,
+  "timeout": 30.0,
   "retries": 2,
   "post_response_timeout": 300.0,
   "post_response_quiet": 10.0,
   "transport": {
     "segment_size": 202,
+    "chunk_ttl": 120.0,
     "chunk_ttl_per_chunk": 25.0,
     "chunk_ttl_max": 3600.0,
     "chunk_delay_threshold": null,
     "chunk_delay_seconds": 0.0,
     "nack_max_per_seq": 3,
-    "nack_interval": 1.0
+    "nack_interval": 1.0,
+    "dedupe_lease_seconds": 300.0
+  },
+  "client": {
+    "backoff_base_seconds": 0.5,
+    "backoff_jitter_factor": 0.2,
+    "backoff_max_seconds": 30.0
+  },
+  "gateway": {
+    "numeric_sender_delay": 0.5,
+    "operation_timeout": 30.0
   }
 }
