@@ -127,7 +127,6 @@ DEFAULT_HANDLERS: Dict[str, Handler] = {
 
 class MeshtasticGateway:
     # Default values (used when mode config is not provided)
-    _DEFAULT_OPERATION_TIMEOUT = 30.0
     _DEFAULT_NUMERIC_SENDER_DELAY = 0.5
 
     def __init__(
@@ -155,10 +154,6 @@ class MeshtasticGateway:
             self._numeric_sender_delay = float(
                 gateway_cfg.get("numeric_sender_delay", self._DEFAULT_NUMERIC_SENDER_DELAY)
             )
-
-        self._operation_timeout = float(
-            gateway_cfg.get("operation_timeout", self._DEFAULT_OPERATION_TIMEOUT)
-        )
 
     def run_once(self, timeout: float = 1.0) -> None:
         outbox_handler = getattr(self.transport, "process_outbox", None)

@@ -41,7 +41,6 @@ class GatewayConfig(TypedDict, total=False):
     """Gateway-level configuration."""
 
     numeric_sender_delay: float
-    operation_timeout: float
 
 
 class ModeProfile(TypedDict, total=False):

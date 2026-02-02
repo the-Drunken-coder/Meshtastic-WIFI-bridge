@@ -24,7 +24,6 @@
     "backoff_max_seconds": 30.0
   },
   "gateway": {
-    "numeric_sender_delay": 0.5,
-    "operation_timeout": 30.0
+    "numeric_sender_delay": 0.5
   }
 }
