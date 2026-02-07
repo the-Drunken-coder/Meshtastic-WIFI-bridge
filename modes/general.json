@@ -8,12 +8,12 @@
   "post_response_timeout": 300.0,
   "post_response_quiet": 10.0,
   "transport": {
-    "segment_size": 202,
+    "segment_size": 100,
     "chunk_ttl": 120.0,
     "chunk_ttl_per_chunk": 25.0,
     "chunk_ttl_max": 3600.0,
-    "chunk_delay_threshold": null,
-    "chunk_delay_seconds": 0.0,
+    "chunk_delay_threshold": 4,
+    "chunk_delay_seconds": 4.0,
     "nack_max_per_seq": 3,
     "nack_interval": 1.0,
     "dedupe_lease_seconds": 300.0

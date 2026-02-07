@@ -272,3 +272,54 @@ def test_transport_roundtrip() -> None:
     assert received.command == envelope.command
     assert received.data == envelope.data
 
+
+def test_transport_uses_configured_chunk_delay_when_threshold_met(monkeypatch) -> None:
+    """Configured chunk delay should apply when message chunk count crosses threshold."""
+    bus = InMemoryRadioBus()
+    sender_radio = InMemoryRadio("sender", bus)
+    transport = MeshtasticTransport(
+        sender_radio,
+        segment_size=40,
+        chunk_delay_threshold=2,
+        chunk_delay_seconds=0.15,
+    )
+    envelope = MessageEnvelope(
+        id="delay-config-test",
+        type="request",
+        command="bulk_payload",
+        data={"payload": "x" * 500},
+    )
+
+    sleep_calls: list[float] = []
+    monkeypatch.setattr("transport.time.sleep", lambda seconds: sleep_calls.append(seconds))
+
+    transport.send_message(envelope, "receiver")
+
+    assert sleep_calls
+    assert all(abs(call - 0.15) < 1e-9 for call in sleep_calls)
+
+
+def test_transport_explicit_chunk_delay_override_disables_pacing(monkeypatch) -> None:
+    """Explicit chunk_delay should override transport-configured pacing."""
+    bus = InMemoryRadioBus()
+    sender_radio = InMemoryRadio("sender", bus)
+    transport = MeshtasticTransport(
+        sender_radio,
+        segment_size=40,
+        chunk_delay_threshold=2,
+        chunk_delay_seconds=0.15,
+    )
+    envelope = MessageEnvelope(
+        id="delay-override-test",
+        type="request",
+        command="bulk_payload",
+        data={"payload": "x" * 500},
+    )
+
+    sleep_calls: list[float] = []
+    monkeypatch.setattr("transport.time.sleep", lambda seconds: sleep_calls.append(seconds))
+
+    transport.send_message(envelope, "receiver", chunk_delay=0.0)
+
+    assert sleep_calls == []
+

@@ -376,6 +376,8 @@ class MeshtasticTransport:
                 )
                 chunks = list(chunk_envelope(envelope, reduced_size))
             self._active_chunks[msg_id] = chunks
+            if chunks:
+                self._cache_chunks(self._message_prefix(msg_id), chunks)
         return self._active_chunks[msg_id]
 
     def _get_next_seq(self, msg_id: str) -> int:
@@ -389,11 +391,24 @@ class MeshtasticTransport:
         self._active_chunks.pop(msg_id, None)
         self._active_progress.pop(msg_id, None)
 
+    def _resolve_chunk_delay(self, total_chunks: int, chunk_delay: float | None) -> float:
+        """Resolve effective inter-chunk delay for a send operation."""
+        if chunk_delay is not None:
+            return max(0.0, float(chunk_delay))
+
+        threshold = self._chunk_delay_threshold
+        if threshold is None or self._chunk_delay_value <= 0:
+            return 0.0
+
+        if total_chunks >= max(1, int(threshold)):
+            return self._chunk_delay_value
+        return 0.0
+
     def send_message(
         self,
         envelope: MessageEnvelope,
         destination: str,
-        chunk_delay: float = 0.0,
+        chunk_delay: float | None = None,
         on_chunk_sent: Callable[[int, int], None] | None = None,
     ) -> None:
         """Send a message immediately (blocking) or enqueue for async sending.
@@ -407,7 +422,39 @@ class MeshtasticTransport:
         else:
             # Direct send for backward compatibility when spool is disabled
             chunks = list(chunk_envelope(envelope, self.segment_size))
+            # Validate chunk sizes against limit (mirror _get_or_create_chunks)
+            oversized = [i for i, chunk in enumerate(chunks, 1) if len(chunk) > MAX_CHUNK_SIZE]
+            if oversized:
+                logger.error(
+                    "[TRANSPORT] Chunks %s for message %s exceed %d bytes with segment_size=%d. "
+                    "Reduce segment_size to avoid transmission failures.",
+                    oversized,
+                    envelope.id,
+                    MAX_CHUNK_SIZE,
+                    self.segment_size,
+                )
+                reduced_size = max(MIN_SEGMENT_SIZE, self.segment_size - SEGMENT_SIZE_REDUCTION)
+                logger.warning(
+                    "[TRANSPORT] Auto-reducing segment_size from %d to %d for %s",
+                    self.segment_size,
+                    reduced_size,
+                    envelope.id,
+                )
+                chunks = list(chunk_envelope(envelope, reduced_size))
             total_chunks = len(chunks)
+            if not chunks:
+                return
+            self._cache_chunks(self._message_prefix(envelope.id), chunks)
+            effective_chunk_delay = self._resolve_chunk_delay(total_chunks, chunk_delay)
+            if self.reliability:
+                try:
+                    self.reliability.on_send(self, envelope, destination, total_chunks)
+                except Exception as e:
+                    logger.warning(
+                        "[TRANSPORT] Reliability on_send hook failed for %s: %s",
+                        envelope.id,
+                        e,
+                    )
             for idx, chunk in enumerate(chunks, start=1):
                 self.radio.send(destination, chunk)
                 self._inc_sent_chunks(envelope.id)
@@ -417,8 +464,8 @@ class MeshtasticTransport:
                     "transport_chunks_total",
                     labels={"direction": "outbound", "command": envelope.command or "unknown"},
                 )
-                if chunk_delay > 0:
-                    time.sleep(chunk_delay)
+                if effective_chunk_delay > 0 and idx < total_chunks:
+                    time.sleep(effective_chunk_delay)
             self._metrics.inc(
                 "transport_messages_total",
                 labels={
@@ -427,6 +474,15 @@ class MeshtasticTransport:
                     "command": envelope.command or "unknown",
                 },
             )
+            if self.reliability:
+                try:
+                    self.reliability.on_chunks_sent(self, envelope, destination, total_chunks)
+                except Exception as e:
+                    logger.warning(
+                        "[TRANSPORT] Reliability on_chunks_sent hook failed for %s: %s",
+                        envelope.id,
+                        e,
+                    )
 
     def _record_progress(
         self, chunk_id: str, chunk_seq: int, chunk_total: int, is_ack: bool
