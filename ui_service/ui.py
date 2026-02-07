@@ -842,12 +842,25 @@ def _start_web_browser(ui_state: UIState, backend: BackendService) -> None:
     ui_state.web_browser_port = port
     
     # Create and start the web browser using the backend's existing transport
-    ui_state.web_browser = MeshWebBrowser(
-        gateway_node_id=ui_state.client_gateway_id or "!unknown",
-        transport=transport,
-        host="127.0.0.1",
-        port=port,
-    )
+    mode_cfg = backend.get_mode_config()
+    
+    # Construct arguments for MeshWebBrowser. If we have a dict-like mode_cfg,
+    # pass it through as mode_config so that MeshWebBrowser can derive its own
+    # request_timeout (based on post_response_timeout) and keep backoff/client
+    # settings in sync with the active mode profile. Otherwise, fall back to
+    # the previous fixed 300s request timeout.
+    browser_kwargs = {
+        "gateway_node_id": ui_state.client_gateway_id or "!unknown",
+        "transport": transport,
+        "host": "127.0.0.1",
+        "port": port,
+    }
+    if isinstance(mode_cfg, dict):
+        browser_kwargs["mode_config"] = mode_cfg
+    else:
+        browser_kwargs["request_timeout"] = 300.0
+
+    ui_state.web_browser = MeshWebBrowser(**browser_kwargs)
     
     # Start in background thread
     ui_state.web_browser.run_threaded()

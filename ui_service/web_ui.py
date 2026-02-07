@@ -670,7 +670,10 @@ class BrowseRequest:
 
 class MeshWebBrowser:
     """Web browser that fetches pages over Meshtastic mesh network."""
-    
+
+    # Default timeout if mode config is not provided
+    _DEFAULT_REQUEST_TIMEOUT = 300.0
+
     def __init__(
         self,
         gateway_node_id: str,
@@ -678,6 +681,8 @@ class MeshWebBrowser:
         radio_port: str | None = None,
         host: str = "127.0.0.1",
         port: int = 8080,
+        request_timeout: float | None = None,
+        mode_config: dict | None = None,
     ):
         self.gateway_node_id = gateway_node_id
         self.host = host
@@ -687,6 +692,16 @@ class MeshWebBrowser:
         self._radio = None
         self._client: MeshtasticClient | None = None
         self._client_lock = threading.Lock()
+        self._mode_config = mode_config or {}
+
+        # Max seconds of inactivity per attempt when fetching via the gateway
+        # Use explicit request_timeout if provided, otherwise use post_response_timeout from mode config
+        if request_timeout is not None:
+            self.request_timeout = float(request_timeout)
+        else:
+            self.request_timeout = float(
+                self._mode_config.get("post_response_timeout", self._DEFAULT_REQUEST_TIMEOUT)
+            )
         
         # Track in-flight requests
         self._requests: dict[str, BrowseRequest] = {}
@@ -826,11 +841,26 @@ class MeshWebBrowser:
                 return self._client
 
             if self._transport is None:
-                # Build our own radio/transport
+                # Build our own radio/transport using mode config
                 self._radio = build_radio(False, self._radio_port, "web_browser")
-                self._transport = MeshtasticTransport(self._radio)
+                transport_cfg = self._mode_config.get("transport", {})
+                self._transport = MeshtasticTransport(
+                    self._radio,
+                    segment_size=int(transport_cfg.get("segment_size", 202)),
+                    chunk_ttl=float(transport_cfg.get("chunk_ttl", 120.0)),
+                    chunk_ttl_per_chunk=float(transport_cfg.get("chunk_ttl_per_chunk", 25.0)),
+                    chunk_ttl_max=float(transport_cfg.get("chunk_ttl_max", 3600.0)),
+                    chunk_delay_threshold=transport_cfg.get("chunk_delay_threshold"),
+                    chunk_delay_seconds=float(transport_cfg.get("chunk_delay_seconds", 0.0)),
+                    nack_max_per_seq=int(transport_cfg.get("nack_max_per_seq", 3)),
+                    nack_interval=float(transport_cfg.get("nack_interval", 1.0)),
+                    dedupe_lease_seconds=float(transport_cfg.get("dedupe_lease_seconds", 300.0)),
+                    reliability=self._mode_config.get("reliability_method"),
+                )
 
-            self._client = MeshtasticClient(self._transport, self.gateway_node_id)
+            self._client = MeshtasticClient(
+                self._transport, self.gateway_node_id, mode_config=self._mode_config
+            )
             return self._client
     
     def _fetch_url(self, request_id: str) -> None:
@@ -868,7 +898,7 @@ class MeshWebBrowser:
             response = client.http_request(
                 url=req.url,
                 progress_callback=progress_callback,
-                timeout=300.0,  # Long timeout for slow mesh
+                timeout=self.request_timeout,  # Inactivity timeout pulled from mode config
             )
             
             duration = time.time() - start_time

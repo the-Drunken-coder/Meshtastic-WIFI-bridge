@@ -15,6 +15,34 @@ from typing import Dict, Iterable
 from typing_extensions import TypedDict
 
 
+class TransportConfig(TypedDict, total=False):
+    """Transport-level configuration."""
+
+    segment_size: int
+    chunk_ttl: float
+    chunk_ttl_per_chunk: float
+    chunk_ttl_max: float
+    chunk_delay_threshold: int | None
+    chunk_delay_seconds: float
+    nack_max_per_seq: int
+    nack_interval: float
+    dedupe_lease_seconds: float
+
+
+class ClientConfig(TypedDict, total=False):
+    """Client-level configuration."""
+
+    backoff_base_seconds: float
+    backoff_jitter_factor: float
+    backoff_max_seconds: float
+
+
+class GatewayConfig(TypedDict, total=False):
+    """Gateway-level configuration."""
+
+    numeric_sender_delay: float
+
+
 class ModeProfile(TypedDict, total=False):
     """Shape of a mode profile loaded from JSON."""
 
@@ -26,7 +54,9 @@ class ModeProfile(TypedDict, total=False):
     retries: int
     post_response_timeout: float
     post_response_quiet: float
-    transport: Dict[str, object]
+    transport: TransportConfig
+    client: ClientConfig
+    gateway: GatewayConfig
 
 
 def _modes_dir() -> Path:
@@ -61,4 +91,11 @@ def list_modes() -> Iterable[str]:
             yield entry.name.rsplit(".", 1)[0]
 
 
-__all__ = ["ModeProfile", "load_mode_profile", "list_modes"]
+__all__ = [
+    "TransportConfig",
+    "ClientConfig",
+    "GatewayConfig",
+    "ModeProfile",
+    "load_mode_profile",
+    "list_modes",
+]

@@ -25,6 +25,7 @@ from client import MeshtasticClient
 from dedupe import DedupeKeys, RequestDeduper
 from gateway import MeshtasticGateway
 from message import MessageEnvelope
+from modes import load_mode_profile
 from radio import build_radio
 from transport import MeshtasticTransport
 
@@ -182,7 +183,7 @@ class BackendService:
         self._last_connect_attempt = 0.0
         self._preferred_port: str | None = None
         self._mode_name: str = "general"
-        self._mode_config: dict = _load_mode_config(self._mode_name)
+        self._mode_config: dict = _safe_load_mode_config(self._mode_name)
         # Cache for port accessibility probing to avoid expensive I/O on every poll.
         # TTL of 30 seconds balances responsiveness with performance - allows detecting
         # new ports within reasonable time while avoiding excessive serial port probing.
@@ -237,6 +238,11 @@ class BackendService:
                 spool_depth=self._state.spool_depth,
                 client_history=list(self._state.client_history),
             )
+
+    def get_mode_config(self) -> dict:
+        """Return a shallow copy of the current mode config."""
+        with self._lock:
+            return dict(self._mode_config or {})
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
@@ -351,7 +357,7 @@ class BackendService:
         with self._lock:
             if mode_name == self._mode_name:
                 return
-            config = _load_mode_config(mode_name)
+            config = _safe_load_mode_config(mode_name)
             self._mode_name = mode_name
             self._mode_config = config
         # Rebuild transport for new settings
@@ -394,7 +400,7 @@ class BackendService:
                 on_message=self._record_gateway_event,
                 on_send=self._record_tx_event,
             )
-            gateway = MeshtasticGateway(wrapped_transport)
+            gateway = MeshtasticGateway(wrapped_transport, mode_config=self._mode_config)
             
             local_id = _resolve_local_radio_id(self._radio)
             with self._lock:
@@ -420,7 +426,7 @@ class BackendService:
                 transport,
                 on_send=self._record_tx_event,
             )
-            client = MeshtasticClient(wrapped_transport, gateway_id)
+            client = MeshtasticClient(wrapped_transport, gateway_id, mode_config=self._mode_config)
             response = client.http_request(
                 url=url,
                 progress_callback=self._record_client_progress,
@@ -453,7 +459,7 @@ class BackendService:
                 transport,
                 on_send=self._record_tx_event,
             )
-            client = MeshtasticClient(wrapped_transport, gateway_id)
+            client = MeshtasticClient(wrapped_transport, gateway_id, mode_config=self._mode_config)
             start = time.time()
             response = client.send_request("health")
             latency = (time.time() - start) * 1000.0
@@ -563,14 +569,17 @@ class BackendService:
 
     def _build_transport(self, radio: object) -> MeshtasticTransport:
         cfg = self._mode_config or {}
+        transport_cfg = cfg.get("transport", {})
         transport_kwargs = {
-            "segment_size": int(cfg.get("transport", {}).get("segment_size", 200)),
-            "chunk_ttl_per_chunk": float(cfg.get("transport", {}).get("chunk_ttl_per_chunk", 2.0)),
-            "chunk_ttl_max": float(cfg.get("transport", {}).get("chunk_ttl_max", 600.0)),
-            "chunk_delay_threshold": cfg.get("transport", {}).get("chunk_delay_threshold", None),
-            "chunk_delay_seconds": float(cfg.get("transport", {}).get("chunk_delay_seconds", 0.0)),
-            "nack_max_per_seq": int(cfg.get("transport", {}).get("nack_max_per_seq", 5)),
-            "nack_interval": float(cfg.get("transport", {}).get("nack_interval", 1.0)),
+            "segment_size": int(transport_cfg.get("segment_size", 202)),
+            "chunk_ttl": float(transport_cfg.get("chunk_ttl", 120.0)),
+            "chunk_ttl_per_chunk": float(transport_cfg.get("chunk_ttl_per_chunk", 25.0)),
+            "chunk_ttl_max": float(transport_cfg.get("chunk_ttl_max", 3600.0)),
+            "chunk_delay_threshold": transport_cfg.get("chunk_delay_threshold", None),
+            "chunk_delay_seconds": float(transport_cfg.get("chunk_delay_seconds", 0.0)),
+            "nack_max_per_seq": int(transport_cfg.get("nack_max_per_seq", 3)),
+            "nack_interval": float(transport_cfg.get("nack_interval", 1.0)),
+            "dedupe_lease_seconds": float(transport_cfg.get("dedupe_lease_seconds", 300.0)),
         }
         reliability_method = cfg.get("reliability_method")
         return MeshtasticTransport(
@@ -700,11 +709,9 @@ def _get_spool_depth(transport: MeshtasticTransport | None) -> int:
     return 0
 
 
-def _load_mode_config(mode_name: str) -> dict:
-    root = Path(__file__).resolve().parent.parent
-    mode_path = root / "modes" / f"{mode_name}.json"
+def _safe_load_mode_config(mode_name: str) -> dict:
+    """Load mode config using the centralized load_mode_profile function."""
     try:
-        with open(mode_path, "r", encoding="utf-8") as handle:
-            return json.load(handle)
+        return dict(load_mode_profile(mode_name))
     except Exception:
         return {}

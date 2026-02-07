@@ -265,26 +265,27 @@ class SerialRadioAdapter:
         # Meshtastic sendData accepts both numeric IDs and user IDs - both work equivalently
         # We prefer user ID format for clarity, but numeric IDs are also valid
         if destination:
-            # Remove ! prefix if present to check if it's numeric
-            dest_clean = destination.lstrip("!")
-            if dest_clean.isdigit():
-                # Convert numeric ID to user ID format for consistency
-                # This uses _getOrCreateByNum or derives from hex format
-                converted = self._convert_numeric_to_user_id(dest_clean)
+            # IMPORTANT: If destination is already a Meshtastic user ID (e.g. !90965648),
+            # keep it as-is. Stripping "!" and parsing as decimal corrupts hex-style IDs.
+            if destination.startswith("!"):
+                pass
+            elif destination.isdigit():
+                # Decimal numeric node ID - convert to user ID format when possible.
+                numeric_destination = destination
+                converted = self._convert_numeric_to_user_id(numeric_destination)
                 if converted:
                     destination = converted
                     LOGGER.debug(
                         "Converted numeric destination %s to user ID %s before sending",
-                        dest_clean,
+                        numeric_destination,
                         converted,
                     )
                 else:
                     # Fallback: use numeric ID as-is (Meshtastic accepts this)
-                    destination = dest_clean
-            elif not destination.startswith("!"):
+                    destination = numeric_destination
+            else:
                 # User ID without ! prefix - add it
                 destination = "!" + destination
-            # If it already starts with ! and is hex, use as-is
 
         payload_bytes = payload if isinstance(payload, bytes) else str(payload).encode("utf-8")
         send_start = time.time()
