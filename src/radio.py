@@ -47,7 +47,9 @@ def _close_orphaned_interface(serial_interface: Any, holder: list) -> None:
         try:
             orphan.close()
         except Exception:
-            pass
+            LOGGER.debug(
+                "Failed to close orphaned SerialInterface instance", exc_info=True
+            )
     holder.clear()
 
 
