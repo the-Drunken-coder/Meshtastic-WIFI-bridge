@@ -145,6 +145,8 @@ class MeshtasticGateway:
         # Load gateway config from mode profile
         self._mode_config = mode_config or {}
         gateway_cfg = self._mode_config.get("gateway", {})
+        if not isinstance(gateway_cfg, dict):
+            gateway_cfg = {}
 
         # Configurable delay for first contact from numeric sender IDs
         # Set to 0 to disable, or adjust based on network conditions

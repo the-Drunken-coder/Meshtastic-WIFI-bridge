@@ -231,7 +231,7 @@ class MessageReassembler:
         highest = max(received_indices) if received_indices else 0
         missing = {seq for seq in expected_indices if seq not in received_indices and seq < highest}
         missing_list: Optional[List[int]] = None
-        if missing and self._should_nack(chunk_id, missing, now):
+        if missing:
             missing_list = self.select_nack(chunk_id, missing, now=now)
         return None, missing_list
 

@@ -37,6 +37,8 @@ class MeshtasticClient:
         # Load client config from mode profile
         self._mode_config = mode_config or {}
         client_cfg = self._mode_config.get("client", {})
+        if not isinstance(client_cfg, dict):
+            client_cfg = {}
         self._backoff_base = float(client_cfg.get("backoff_base_seconds", _DEFAULT_BACKOFF_BASE_SECONDS))
         self._backoff_jitter = float(client_cfg.get("backoff_jitter_factor", _DEFAULT_BACKOFF_JITTER_FACTOR))
         self._backoff_max = float(client_cfg.get("backoff_max_seconds", _DEFAULT_BACKOFF_MAX_SECONDS))

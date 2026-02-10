@@ -844,6 +844,8 @@ class MeshWebBrowser:
                 # Build our own radio/transport using mode config
                 self._radio = build_radio(False, self._radio_port, "web_browser")
                 transport_cfg = self._mode_config.get("transport", {})
+                if not isinstance(transport_cfg, dict):
+                    transport_cfg = {}
                 self._transport = MeshtasticTransport(
                     self._radio,
                     segment_size=int(transport_cfg.get("segment_size", 202)),
