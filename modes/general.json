@@ -3,7 +3,7 @@
   "description": "Balanced defaults: windowed reliability, moderate timeouts, and conservative NACK pacing.",
   "reliability_method": "window",
   "modem_preset": "MEDIUM_SLOW",
-  "tx_power": 30,
+  "tx_power": 0,
   "timeout": 30.0,
   "retries": 2,
   "post_response_timeout": 300.0,

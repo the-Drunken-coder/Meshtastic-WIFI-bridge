@@ -85,7 +85,11 @@ def _apply_lora_settings(
     client_port: str,
     simulate: bool,
 ) -> None:
-    """Best-effort apply LoRa settings (preset/tx power) to both radios."""
+    """Best-effort apply LoRa settings (preset/tx power) to both radios.
+
+    ``tx_power=0`` means "let the firmware choose" — the radio will use its
+    default power level for the selected modem preset.
+    """
     if simulate:
         logging.info("Simulation enabled; skipping LoRa settings changes")
         return
@@ -112,16 +116,72 @@ def _apply_lora_settings(
         if preset_value is None:
             logging.warning("Unknown modem preset %s; skipping preset change", preset_name)
 
+    reboot_sleep = 10.0  # radios reboot after LoRa config writes
+
+    def _open_interface(port: str) -> "serial_interface.SerialInterface":
+        """Open a SerialInterface, ensuring the serial port is released on failure.
+
+        When SerialInterface.__init__ times out waiting for the node, background
+        threads keep the orphaned object (and its open COM port) alive.  We
+        monkey-patch __init__ briefly to capture ``self`` so we can call
+        ``close()`` even when the constructor raises.
+        """
+        _holder: list = []
+        _orig_init = serial_interface.SerialInterface.__init__
+
+        def _capturing_init(self: Any, *args: Any, **kwargs: Any) -> None:
+            _holder.append(self)
+            _orig_init(self, *args, **kwargs)
+
+        serial_interface.SerialInterface.__init__ = _capturing_init  # type: ignore[assignment]
+        try:
+            return serial_interface.SerialInterface(port)
+        except Exception:
+            # Close any partially-initialised interface so the COM port is freed.
+            for orphan in _holder:
+                try:
+                    orphan.close()
+                except Exception:
+                    pass
+            raise
+        finally:
+            serial_interface.SerialInterface.__init__ = _orig_init  # type: ignore[assignment]
+
     for name, port in (("gateway", gateway_port), ("client", client_port)):
         iface = None
+        wrote_config = False
         try:
-            iface = serial_interface.SerialInterface(port)
+            iface = _open_interface(port)
             cfg = iface.localNode.localConfig
+
+            # Check if settings already match — skip write to avoid a reboot.
+            # Cast to int for comparison; protobuf enums may not compare equal directly.
+            cur_preset = int(cfg.lora.modem_preset)
+            cur_tx = int(cfg.lora.tx_power)
+            want_preset = int(preset_value) if preset_value is not None else None
+            want_tx = int(tx_power) if tx_power is not None else None
+            logging.debug(
+                "LoRa on %s (%s): current preset=%s tx_power=%s, want preset=%s tx_power=%s",
+                name, port, cur_preset, cur_tx, want_preset, want_tx,
+            )
+            preset_match = want_preset is None or cur_preset == want_preset
+            # tx_power=0 means "let firmware choose" — any reported value is fine.
+            # For explicit values, the radio firmware caps to hardware limits;
+            # if the radio reports a lower value, it is already at its max.
+            tx_match = want_tx is None or want_tx == 0 or cur_tx <= want_tx
+            if preset_match and tx_match:
+                logging.info(
+                    "LoRa settings on %s (%s) already match (preset=%s, tx_power=%s); skipping write",
+                    name, port, preset_name, tx_power,
+                )
+                continue
+
             if preset_value is not None:
                 cfg.lora.modem_preset = preset_value
             if tx_power is not None:
                 cfg.lora.tx_power = int(tx_power)
             iface.localNode.writeConfig("lora")
+            wrote_config = True
             if preset_value is not None and tx_power is not None:
                 logging.info(
                     "Set %s radio (%s) to preset %s and tx_power %s",
@@ -150,9 +210,10 @@ def _apply_lora_settings(
                 except Exception:
                     # Device may have already rebooted/disconnected; ignore cleanup errors.
                     pass
-            # After config writes, many radios briefly reboot/reset the serial link.
-            # Give Windows time to re-stabilize the COM port before the harness reconnects.
-            time.sleep(2.0)
+            if wrote_config:
+                # Radio reboots after a config write; wait for COM port to re-enumerate.
+                logging.info("Waiting %.0fs for %s (%s) to reboot after config write...", reboot_sleep, name, port)
+                time.sleep(reboot_sleep)
 
 def prompt_action(
     actions: List[str],

@@ -37,6 +37,41 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _close_orphaned_interface(serial_interface: Any, holder: list) -> None:
+    """Close a partially-initialised SerialInterface that the constructor leaked.
+
+    When ``SerialInterface.__init__`` times out, background threads keep the
+    orphaned object (and its open COM port) alive.  This helper closes it.
+    """
+    for orphan in holder:
+        try:
+            orphan.close()
+        except Exception:
+            pass
+    holder.clear()
+
+
+def _open_serial_interface(serial_interface: Any, port: str | None) -> Any:
+    """Create a SerialInterface, ensuring the COM port is freed if __init__ fails."""
+    _holder: list = []
+    _orig_init = serial_interface.SerialInterface.__init__
+
+    def _capturing_init(self: Any, *args: Any, **kwargs: Any) -> None:
+        _holder.append(self)
+        _orig_init(self, *args, **kwargs)
+
+    serial_interface.SerialInterface.__init__ = _capturing_init  # type: ignore[assignment]
+    try:
+        if port is None:
+            return serial_interface.SerialInterface()
+        return serial_interface.SerialInterface(port)
+    except Exception:
+        _close_orphaned_interface(serial_interface, _holder)
+        raise
+    finally:
+        serial_interface.SerialInterface.__init__ = _orig_init  # type: ignore[assignment]
+
+
 def _connect_serial_interface_with_retries(  # type: ignore[name-defined]
     serial_interface: Any,
     port: str | None,
@@ -48,15 +83,13 @@ def _connect_serial_interface_with_retries(  # type: ignore[name-defined]
     from failing on transient reconnect windows.
     """
 
-    attempts = max(1, _env_int("MESHTASTIC_SERIAL_CONNECT_ATTEMPTS", 3))
-    delay_seconds = max(0.0, _env_float("MESHTASTIC_SERIAL_CONNECT_DELAY_SECONDS", 2.0))
+    attempts = max(1, _env_int("MESHTASTIC_SERIAL_CONNECT_ATTEMPTS", 5))
+    delay_seconds = max(0.0, _env_float("MESHTASTIC_SERIAL_CONNECT_DELAY_SECONDS", 3.0))
 
     last_exc: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
-            if port is None:
-                return serial_interface.SerialInterface()
-            return serial_interface.SerialInterface(port)
+            return _open_serial_interface(serial_interface, port)
         except Exception as exc:  # pragma: no cover - exercised via tests with fakes
             last_exc = exc
             if attempt >= attempts:
