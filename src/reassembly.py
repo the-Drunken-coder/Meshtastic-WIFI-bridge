@@ -92,6 +92,32 @@ class MessageReassembler:
         """Add a chunk and return both the message (if complete) and any missing sequences."""
         return self._add_chunk(chunk)
 
+    def select_nack(self, chunk_id: str, missing: Set[int], now: float | None = None) -> Optional[List[int]]:
+        """Return a filtered/throttled list of sequences to NACK.
+
+        This centralizes NACK throttling and per-sequence caps so both the normal
+        "observed gap" path and any external "trailing gap" repair logic can
+        share the same suppression rules.
+
+        Returns None when no NACK should be emitted (throttled/capped/empty).
+        """
+        if not missing:
+            return None
+        now = time.time() if now is None else now
+        if not self._should_nack(chunk_id, missing, now):
+            return None
+        filtered: List[int] = []
+        counts = self._nack_counts.setdefault(chunk_id, {})
+        for seq in sorted(missing):
+            attempts = counts.get(seq, 0)
+            if attempts < self._nack_max_per_seq:
+                filtered.append(seq)
+                counts[seq] = attempts + 1
+        if not filtered:
+            return None
+        self._nack_state[chunk_id] = (set(filtered), now)
+        return filtered
+
     def _add_chunk(
         self, chunk: bytes
     ) -> Tuple[Optional[MessageEnvelope], Optional[List[int]]]:
@@ -205,17 +231,8 @@ class MessageReassembler:
         highest = max(received_indices) if received_indices else 0
         missing = {seq for seq in expected_indices if seq not in received_indices and seq < highest}
         missing_list: Optional[List[int]] = None
-        if missing and self._should_nack(chunk_id, missing, now):
-            filtered = []
-            counts = self._nack_counts.setdefault(chunk_id, {})
-            for seq in sorted(missing):
-                attempts = counts.get(seq, 0)
-                if attempts < self._nack_max_per_seq:
-                    filtered.append(seq)
-                    counts[seq] = attempts + 1
-            if filtered:
-                missing_list = filtered
-                self._nack_state[chunk_id] = (set(filtered), now)
+        if missing:
+            missing_list = self.select_nack(chunk_id, missing, now=now)
         return None, missing_list
 
     def prune(self) -> None:

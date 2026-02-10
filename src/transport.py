@@ -79,6 +79,14 @@ class ChunkProgress:
     is_ack: bool = False
 
 
+@dataclass
+class _InboundSession:
+    sender: str
+    last_rx: float
+    highest_seq: int
+    total: int
+
+
 RETRY_CHUNK_DELAY = 0.1
 MAX_CHUNK_SIZE = 230  # Conservative Meshtastic chunk size limit (bytes)
 MIN_SEGMENT_SIZE = 50  # Minimum segment size to avoid over-reduction
@@ -121,6 +129,8 @@ class MeshtasticTransport:
         chunk_delay_seconds: float = 0.0,  # Delay between chunks when threshold is met
         nack_max_per_seq: int = 5,
         nack_interval: float = 1.0,
+        trailing_nack_after: float | None = None,
+        trailing_nack_window: int = 2,
         spool_path: str | None = None,
         spool_max_attempts: int = 5,
         spool_base_delay: float = 2.0,
@@ -146,6 +156,9 @@ class MeshtasticTransport:
         self._progress_ttl = max(chunk_ttl_max, chunk_ttl, 1.0)
         self._chunk_delay_threshold = chunk_delay_threshold
         self._chunk_delay_value = max(0.0, chunk_delay_seconds)
+        self._nack_interval = float(nack_interval)
+        self._trailing_nack_after = trailing_nack_after
+        self._trailing_nack_window = max(1, int(trailing_nack_window))
         # Cache sent chunks for targeted resends on NACK
         self._chunk_cache: Dict[str, Dict[int, bytes]] = {}
         self._chunk_cache_expiry: Dict[str, float] = {}
@@ -181,8 +194,62 @@ class MeshtasticTransport:
         self._cleanup_interval: float = 10.0  # Cleanup every 10 seconds max
         self._cleanup_counter: int = 0
         self._cleanup_every_n: int = 50  # Or every 50 operations
+
+        # Track incomplete inbound messages so we can NACK trailing gaps when the
+        # stream stalls (e.g., last chunk(s) lost, no "observed gap" to trigger NACK).
+        self._inbound_sessions: Dict[str, _InboundSession] = {}
         
         self._record_spool_depth()
+
+    def _trailing_nack_idle_threshold(self, total_chunks: int) -> float:
+        """How long to wait after last RX before requesting missing tail chunks."""
+        if self._trailing_nack_after is not None:
+            return max(0.0, float(self._trailing_nack_after))
+        expected_gap = 0.0
+        if (
+            self._chunk_delay_threshold is not None
+            and self._chunk_delay_value > 0.0
+            and total_chunks >= max(1, int(self._chunk_delay_threshold))
+        ):
+            expected_gap = self._chunk_delay_value
+        # Default: be conservative enough to avoid constant premature NACKs, but
+        # still recover before typical client inactivity timeouts (30s default).
+        return max(1.0, self._nack_interval, expected_gap * 2.0)
+
+    def _maybe_nack_trailing_gaps(self, now: float) -> None:
+        """Request missing sequences even when no new chunks arrive.
+
+        This is crucial for the "trailing loss" case: if the last chunk(s) of a
+        message are lost, the receiver never observes a gap (missing < highest),
+        so it won't NACK under the normal logic unless we proactively ask.
+        """
+        if not self._inbound_sessions:
+            return
+        stale: List[str] = []
+        for chunk_id, sess in list(self._inbound_sessions.items()):
+            missing_all = self.reassembler.missing_sequences(chunk_id, force=True)
+            if missing_all is None:
+                stale.append(chunk_id)
+                continue
+            if not missing_all:
+                stale.append(chunk_id)
+                continue
+
+            idle = now - sess.last_rx
+            if idle < self._trailing_nack_idle_threshold(sess.total):
+                continue
+
+            # Ask for the next few chunks we expect beyond the highest seen.
+            want_max = min(sess.total, sess.highest_seq + self._trailing_nack_window)
+            candidates = [s for s in missing_all if s <= want_max]
+            if not candidates:
+                candidates = [missing_all[0]]
+            to_nack = self.reassembler.select_nack(chunk_id, set(candidates), now=now)
+            if to_nack:
+                self.reliability.on_missing(sess.sender, chunk_id, to_nack, self)
+
+        for chunk_id in stale:
+            self._inbound_sessions.pop(chunk_id, None)
 
     def _record_spool_depth(self) -> None:
         if not self.spool:
@@ -376,6 +443,8 @@ class MeshtasticTransport:
                 )
                 chunks = list(chunk_envelope(envelope, reduced_size))
             self._active_chunks[msg_id] = chunks
+            if chunks:
+                self._cache_chunks(self._message_prefix(msg_id), chunks)
         return self._active_chunks[msg_id]
 
     def _get_next_seq(self, msg_id: str) -> int:
@@ -389,11 +458,24 @@ class MeshtasticTransport:
         self._active_chunks.pop(msg_id, None)
         self._active_progress.pop(msg_id, None)
 
+    def _resolve_chunk_delay(self, total_chunks: int, chunk_delay: float | None) -> float:
+        """Resolve effective inter-chunk delay for a send operation."""
+        if chunk_delay is not None:
+            return max(0.0, float(chunk_delay))
+
+        threshold = self._chunk_delay_threshold
+        if threshold is None or self._chunk_delay_value <= 0:
+            return 0.0
+
+        if total_chunks >= max(1, int(threshold)):
+            return self._chunk_delay_value
+        return 0.0
+
     def send_message(
         self,
         envelope: MessageEnvelope,
         destination: str,
-        chunk_delay: float = 0.0,
+        chunk_delay: float | None = None,
         on_chunk_sent: Callable[[int, int], None] | None = None,
     ) -> None:
         """Send a message immediately (blocking) or enqueue for async sending.
@@ -407,7 +489,39 @@ class MeshtasticTransport:
         else:
             # Direct send for backward compatibility when spool is disabled
             chunks = list(chunk_envelope(envelope, self.segment_size))
+            # Validate chunk sizes against limit (mirror _get_or_create_chunks)
+            oversized = [i for i, chunk in enumerate(chunks, 1) if len(chunk) > MAX_CHUNK_SIZE]
+            if oversized:
+                logger.error(
+                    "[TRANSPORT] Chunks %s for message %s exceed %d bytes with segment_size=%d. "
+                    "Reduce segment_size to avoid transmission failures.",
+                    oversized,
+                    envelope.id,
+                    MAX_CHUNK_SIZE,
+                    self.segment_size,
+                )
+                reduced_size = max(MIN_SEGMENT_SIZE, self.segment_size - SEGMENT_SIZE_REDUCTION)
+                logger.warning(
+                    "[TRANSPORT] Auto-reducing segment_size from %d to %d for %s",
+                    self.segment_size,
+                    reduced_size,
+                    envelope.id,
+                )
+                chunks = list(chunk_envelope(envelope, reduced_size))
             total_chunks = len(chunks)
+            if not chunks:
+                return
+            self._cache_chunks(self._message_prefix(envelope.id), chunks)
+            effective_chunk_delay = self._resolve_chunk_delay(total_chunks, chunk_delay)
+            if self.reliability:
+                try:
+                    self.reliability.on_send(self, envelope, destination, total_chunks)
+                except Exception as e:
+                    logger.warning(
+                        "[TRANSPORT] Reliability on_send hook failed for %s: %s",
+                        envelope.id,
+                        e,
+                    )
             for idx, chunk in enumerate(chunks, start=1):
                 self.radio.send(destination, chunk)
                 self._inc_sent_chunks(envelope.id)
@@ -417,8 +531,8 @@ class MeshtasticTransport:
                     "transport_chunks_total",
                     labels={"direction": "outbound", "command": envelope.command or "unknown"},
                 )
-                if chunk_delay > 0:
-                    time.sleep(chunk_delay)
+                if effective_chunk_delay > 0 and idx < total_chunks:
+                    time.sleep(effective_chunk_delay)
             self._metrics.inc(
                 "transport_messages_total",
                 labels={
@@ -427,6 +541,15 @@ class MeshtasticTransport:
                     "command": envelope.command or "unknown",
                 },
             )
+            if self.reliability:
+                try:
+                    self.reliability.on_chunks_sent(self, envelope, destination, total_chunks)
+                except Exception as e:
+                    logger.warning(
+                        "[TRANSPORT] Reliability on_chunks_sent hook failed for %s: %s",
+                        envelope.id,
+                        e,
+                    )
 
     def _record_progress(
         self, chunk_id: str, chunk_seq: int, chunk_total: int, is_ack: bool
@@ -464,6 +587,14 @@ class MeshtasticTransport:
         
         # Also cleanup chunk cache while we're at it
         self._prune_chunk_cache(now)
+        # Cleanup expired reassembly buckets (and drop any orphan session state)
+        try:
+            self.reassembler.prune()
+        except Exception:
+            logger.debug("[TRANSPORT] Reassembler prune failed", exc_info=True)
+        for chunk_id in list(self._inbound_sessions.keys()):
+            if self.reassembler.missing_sequences(chunk_id, force=True) is None:
+                self._inbound_sessions.pop(chunk_id, None)
 
     def receive_message(
         self, timeout: float = 0.5
@@ -482,6 +613,9 @@ class MeshtasticTransport:
             receive_timeout = max(0.05, min(remaining, 0.5))
             received = self.radio.receive(receive_timeout)
             if received is None:
+                # If we're mid-reassembly and the stream stalls, proactively request
+                # missing tail chunks (handles "lost last chunk" without out-of-order RX).
+                self._maybe_nack_trailing_gaps(time.time())
                 # Reduced sleep: 2ms when actively receiving, longer otherwise
                 # This balances latency vs CPU usage
                 sleep_time = 0.002 if chunks_received > 0 else 0.005
@@ -509,6 +643,21 @@ class MeshtasticTransport:
                     chunk_id,
                     sender,
                 )
+                # Track partial inbound messages for trailing-gap repair.
+                now = time.time()
+                sess = self._inbound_sessions.get(chunk_id)
+                if sess is None:
+                    self._inbound_sessions[chunk_id] = _InboundSession(
+                        sender=sender,
+                        last_rx=now,
+                        highest_seq=chunk_seq,
+                        total=chunk_total,
+                    )
+                else:
+                    sess.sender = sender
+                    sess.last_rx = now
+                    sess.highest_seq = max(sess.highest_seq, chunk_seq)
+                    sess.total = max(sess.total, chunk_total)
                 self._metrics.inc(
                     "transport_chunks_total",
                     labels=_LABELS_CHUNKS_INBOUND,
@@ -525,6 +674,8 @@ class MeshtasticTransport:
                 total_time = time.time() - receive_start
                 # Optional application-level ACK/NACK behaviour
                 self.reliability.on_complete(sender, message, self)
+                # Drop inbound tracking for this message prefix (reassembly complete).
+                self._inbound_sessions.pop(message.id[:8], None)
                 logger.info(
                     "[TRANSPORT] Reassembled message %s (%d chunks) in %.3fs from %s",
                     message.id[:8],
@@ -589,6 +740,17 @@ class MeshtasticTransport:
                 "[TRANSPORT] No cached chunks for %s; ignoring NACK %s", message_prefix, missing
             )
             return
+        # Respect pacing for large messages during NACK-driven resends to avoid
+        # overrunning slow links / radio buffers.
+        inferred_total: int | None = None
+        try:
+            sample = next(iter(cache.values()))
+            _f, _cid, _seq, total, _pl = parse_chunk(sample)
+            inferred_total = int(total)
+        except Exception:
+            inferred_total = None
+        effective_delay = self._resolve_chunk_delay(inferred_total or len(cache), None)
+        resend_delay = max(RETRY_CHUNK_DELAY, effective_delay)
         logger.info(
             "[TRANSPORT] Resending %d chunks for %s to %s (missing: %s)",
             len(missing),
@@ -607,7 +769,7 @@ class MeshtasticTransport:
                     "transport_chunks_total",
                     labels=_LABELS_CHUNKS_OUTBOUND_NACK,
                 )
-                time.sleep(RETRY_CHUNK_DELAY)
+                time.sleep(resend_delay)
             except Exception:
                 logger.debug(
                     "[TRANSPORT] Failed to resend chunk %s/%s to %s",

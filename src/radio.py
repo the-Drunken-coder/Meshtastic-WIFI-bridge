@@ -6,7 +6,7 @@ import threading
 import time
 from typing import TYPE_CHECKING, Any
 
-from message import parse_chunk
+from message import FLAG_ACK, FLAG_NACK, parse_chunk
 from transport import InMemoryRadio, RadioInterface
 
 if TYPE_CHECKING:
@@ -188,11 +188,18 @@ class SerialRadioAdapter:
             if not isinstance(payload_bytes, bytes):
                 payload_bytes = str(payload_bytes).encode("utf-8")
 
-            # Deduplicate messages using chunk header when possible (id + seq + total + flags).
+            # Deduplicate messages using chunk header when possible.
+            #
+            # For data chunks (flags == 0), (short_id, seq, total) is stable and sufficient.
+            # For control chunks (ACK/NACK), seq/total are always (1,1) and payload carries the
+            # meaning, so include a payload hash to avoid dropping distinct control frames.
             # Fall back to payload hash if parsing fails.
             try:
-                flags, short_id, seq, total, _ = parse_chunk(payload_bytes)
-                message_key = (source_str, short_id, seq, total, flags)
+                flags, short_id, seq, total, chunk_payload = parse_chunk(payload_bytes)
+                if flags & (FLAG_ACK | FLAG_NACK):
+                    message_key = (source_str, short_id, seq, total, flags, hash(chunk_payload))
+                else:
+                    message_key = (source_str, short_id, seq, total, flags)
             except Exception:
                 # Using Python's built-in hash for non-cryptographic deduplication
                 payload_hash = hash(payload_bytes)
@@ -265,26 +272,27 @@ class SerialRadioAdapter:
         # Meshtastic sendData accepts both numeric IDs and user IDs - both work equivalently
         # We prefer user ID format for clarity, but numeric IDs are also valid
         if destination:
-            # Remove ! prefix if present to check if it's numeric
-            dest_clean = destination.lstrip("!")
-            if dest_clean.isdigit():
-                # Convert numeric ID to user ID format for consistency
-                # This uses _getOrCreateByNum or derives from hex format
-                converted = self._convert_numeric_to_user_id(dest_clean)
+            # IMPORTANT: If destination is already a Meshtastic user ID (e.g. !90965648),
+            # keep it as-is. Stripping "!" and parsing as decimal corrupts hex-style IDs.
+            if destination.startswith("!"):
+                pass
+            elif destination.isdigit():
+                # Decimal numeric node ID - convert to user ID format when possible.
+                numeric_destination = destination
+                converted = self._convert_numeric_to_user_id(numeric_destination)
                 if converted:
                     destination = converted
                     LOGGER.debug(
                         "Converted numeric destination %s to user ID %s before sending",
-                        dest_clean,
+                        numeric_destination,
                         converted,
                     )
                 else:
                     # Fallback: use numeric ID as-is (Meshtastic accepts this)
-                    destination = dest_clean
-            elif not destination.startswith("!"):
+                    destination = numeric_destination
+            else:
                 # User ID without ! prefix - add it
                 destination = "!" + destination
-            # If it already starts with ! and is hex, use as-is
 
         payload_bytes = payload if isinstance(payload, bytes) else str(payload).encode("utf-8")
         send_start = time.time()

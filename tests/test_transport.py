@@ -143,6 +143,60 @@ def test_transport_receive_message() -> None:
     assert received_envelope.data == envelope.data
 
 
+def test_transport_trailing_loss_recovers_via_nack() -> None:
+    """If the last chunk(s) are lost, receiver should proactively NACK to recover."""
+    bus = InMemoryRadioBus()
+    sender_transport = MeshtasticTransport(
+        InMemoryRadio("sender", bus),
+        segment_size=50,
+        trailing_nack_after=0.0,  # trigger immediately when idle
+        trailing_nack_window=3,
+    )
+    receiver_transport = MeshtasticTransport(
+        InMemoryRadio("receiver", bus),
+        segment_size=50,
+        trailing_nack_after=0.0,
+        trailing_nack_window=3,
+    )
+
+    envelope = MessageEnvelope(
+        id="trail-loss-id-123456",
+        type="request",
+        command="fetch",
+        data={"payload": "x" * 1200},  # ensure multiple chunks
+    )
+
+    # Sender transmits all chunks to receiver queue.
+    sender_transport.send_message(envelope, "receiver")
+
+    # Drop the last two chunks to simulate trailing loss.
+    queued: list[tuple[str, bytes]] = []
+    while True:
+        item = bus.receive("receiver")
+        if item is None:
+            break
+        queued.append(item)
+    assert len(queued) >= 3
+    for item in queued[:-2]:
+        bus.send(item[0], "receiver", item[1])
+
+    # Receiver attempts reassembly; should not complete yet, but should emit NACK(s).
+    sender, msg = receiver_transport.receive_message(timeout=0.1)
+    assert sender is None
+    assert msg is None
+
+    # Let sender process the NACK control frame(s) and resend missing chunks.
+    sender_transport.receive_message(timeout=0.2)
+
+    # Receiver should now be able to reassemble the full message.
+    sender, msg = receiver_transport.receive_message(timeout=1.0)
+    assert sender == "sender"
+    assert msg is not None
+    assert msg.id == envelope.id
+    assert msg.command == envelope.command
+    assert msg.data == envelope.data
+
+
 def test_transport_receive_timeout() -> None:
     """Test that receive_message returns None on timeout."""
     radio = InMemoryRadio("node")
@@ -271,4 +325,55 @@ def test_transport_roundtrip() -> None:
     assert received.id == envelope.id
     assert received.command == envelope.command
     assert received.data == envelope.data
+
+
+def test_transport_uses_configured_chunk_delay_when_threshold_met(monkeypatch) -> None:
+    """Configured chunk delay should apply when message chunk count crosses threshold."""
+    bus = InMemoryRadioBus()
+    sender_radio = InMemoryRadio("sender", bus)
+    transport = MeshtasticTransport(
+        sender_radio,
+        segment_size=40,
+        chunk_delay_threshold=2,
+        chunk_delay_seconds=0.15,
+    )
+    envelope = MessageEnvelope(
+        id="delay-config-test",
+        type="request",
+        command="bulk_payload",
+        data={"payload": "x" * 500},
+    )
+
+    sleep_calls: list[float] = []
+    monkeypatch.setattr("transport.time.sleep", lambda seconds: sleep_calls.append(seconds))
+
+    transport.send_message(envelope, "receiver")
+
+    assert sleep_calls
+    assert all(abs(call - 0.15) < 1e-9 for call in sleep_calls)
+
+
+def test_transport_explicit_chunk_delay_override_disables_pacing(monkeypatch) -> None:
+    """Explicit chunk_delay should override transport-configured pacing."""
+    bus = InMemoryRadioBus()
+    sender_radio = InMemoryRadio("sender", bus)
+    transport = MeshtasticTransport(
+        sender_radio,
+        segment_size=40,
+        chunk_delay_threshold=2,
+        chunk_delay_seconds=0.15,
+    )
+    envelope = MessageEnvelope(
+        id="delay-override-test",
+        type="request",
+        command="bulk_payload",
+        data={"payload": "x" * 500},
+    )
+
+    sleep_calls: list[float] = []
+    monkeypatch.setattr("transport.time.sleep", lambda seconds: sleep_calls.append(seconds))
+
+    transport.send_message(envelope, "receiver", chunk_delay=0.0)
+
+    assert sleep_calls == []
 

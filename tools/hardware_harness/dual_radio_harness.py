@@ -77,15 +77,22 @@ except ImportError:
         retarget_spool_destination,
         wait_for_settled,
     )
-def _apply_modem_preset(preset_name: str, gateway_port: str, client_port: str, simulate: bool) -> None:
-    """Best-effort apply a Meshtastic modem preset to both radios."""
+def _apply_lora_settings(
+    *,
+    preset_name: str | None,
+    tx_power: int | None,
+    gateway_port: str,
+    client_port: str,
+    simulate: bool,
+) -> None:
+    """Best-effort apply LoRa settings (preset/tx power) to both radios."""
     if simulate:
-        logging.info("Simulation enabled; skipping modem preset change (%s)", preset_name)
+        logging.info("Simulation enabled; skipping LoRa settings changes")
         return
     try:
         from meshtastic import config_pb2, serial_interface
     except ImportError as exc:  # pragma: no cover - hardware-only path
-        logging.warning("meshtastic not available; cannot set modem preset %s: %s", preset_name, exc)
+        logging.warning("meshtastic not available; cannot set LoRa settings: %s", exc)
         return
 
     preset_map = {
@@ -99,22 +106,44 @@ def _apply_modem_preset(preset_name: str, gateway_port: str, client_port: str, s
         "SHORT_SLOW": config_pb2.Config.LoRaConfig.ModemPreset.SHORT_SLOW,
         "SHORT_TURBO": config_pb2.Config.LoRaConfig.ModemPreset.SHORT_TURBO,
     }
-    preset_value = preset_map.get(preset_name.upper())
-    if preset_value is None:
-        logging.warning("Unknown modem preset %s; skipping preset change", preset_name)
-        return
+    preset_value = None
+    if preset_name:
+        preset_value = preset_map.get(preset_name.upper())
+        if preset_value is None:
+            logging.warning("Unknown modem preset %s; skipping preset change", preset_name)
 
     for name, port in (("gateway", gateway_port), ("client", client_port)):
         try:
             iface = serial_interface.SerialInterface(port)
             cfg = iface.localNode.localConfig
-            cfg.lora.modem_preset = preset_value
+            if preset_value is not None:
+                cfg.lora.modem_preset = preset_value
+            if tx_power is not None:
+                cfg.lora.tx_power = int(tx_power)
             iface.localNode.writeConfig("lora")
-            logging.info("Set %s radio (%s) to preset %s", name, port, preset_name)
+            if preset_value is not None and tx_power is not None:
+                logging.info(
+                    "Set %s radio (%s) to preset %s and tx_power %s",
+                    name,
+                    port,
+                    preset_name,
+                    tx_power,
+                )
+            elif preset_value is not None:
+                logging.info("Set %s radio (%s) to preset %s", name, port, preset_name)
+            elif tx_power is not None:
+                logging.info("Set %s radio (%s) to tx_power %s", name, port, tx_power)
             iface.close()
             time.sleep(0.5)
         except Exception as exc:  # pragma: no cover - hardware-only path
-            logging.warning("Failed to set preset %s on %s (%s): %s", preset_name, name, port, exc)
+            logging.warning(
+                "Failed to set LoRa settings (preset=%s, tx_power=%s) on %s (%s): %s",
+                preset_name,
+                tx_power,
+                name,
+                port,
+                exc,
+            )
 
 def prompt_action(
     actions: List[str],
@@ -365,11 +394,23 @@ def main() -> None:
     logging.info("Using gateway port %s and client port %s", gateway_port, client_port)
 
     mode_preset = os.getenv("MESHTASTIC_MODE_PRESET") or config.get("modem_preset")
+    mode_tx_power = config.get("tx_power")
     if mode_preset:
         logging.info("Requested Meshtastic modem preset: %s", mode_preset)
-        _apply_modem_preset(mode_preset, gateway_port, client_port, bool(config.get("simulate")))
     else:
         logging.info("Meshtastic modem preset: leave unchanged (no override)")
+    if mode_tx_power is not None:
+        logging.info("Requested Meshtastic tx_power: %s", mode_tx_power)
+    else:
+        logging.info("Meshtastic tx_power: leave unchanged (no override)")
+    if mode_preset or mode_tx_power is not None:
+        _apply_lora_settings(
+            preset_name=mode_preset,
+            tx_power=int(mode_tx_power) if mode_tx_power is not None else None,
+            gateway_port=gateway_port,
+            client_port=client_port,
+            simulate=bool(config.get("simulate")),
+        )
 
     gateway_transport = build_transport(
         config.get("simulate", False),
@@ -415,9 +456,10 @@ def main() -> None:
     )
     retarget_spool_destination(client_transport, gateway_node_id)
 
-    gateway, gateway_thread = start_gateway(transport=gateway_transport)
+    mode_config = config.get("_mode_profile", {})
+    gateway, gateway_thread = start_gateway(transport=gateway_transport, mode_config=mode_config)
 
-    client = MeshtasticClient(client_transport, gateway_node_id=gateway_node_id)
+    client = MeshtasticClient(client_transport, gateway_node_id=gateway_node_id, mode_config=mode_config)
 
     diagnostics: List[Dict[str, Any]] = []
     try:

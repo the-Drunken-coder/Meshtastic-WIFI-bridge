@@ -4,7 +4,7 @@ import tempfile
 from pathlib import Path
 
 
-from message import MessageEnvelope
+from message import FLAG_ACK, MessageEnvelope, estimate_chunk_count, parse_chunk
 from reliability import (
     NoAckNackStrategy,
     ParityWindowStrategy,
@@ -18,6 +18,15 @@ from transport import (
     InMemoryRadioBus,
     MeshtasticTransport,
 )
+
+
+def _count_ack_chunks(queue) -> int:
+    count = 0
+    for _source, payload in queue:
+        flags, _chunk_id, _seq, _total, _payload = parse_chunk(payload)
+        if flags & FLAG_ACK:
+            count += 1
+    return count
 
 
 def test_strategy_from_name_none():
@@ -207,10 +216,15 @@ def test_windowed_selective_strategy():
         id="test-window",
         type="request",
         command="ping",
-        data={"msg": "test" * 20},  # Multi-chunk message
+        data={"blob": bytes(range(256)) * 4},  # Multi-chunk message, low compressibility
     )
 
+    total_chunks = estimate_chunk_count(envelope, sender.segment_size)
+    assert total_chunks > 1
     sender.send_message(envelope, "receiver")
+    queued = list(bus.queues["receiver"])
+    assert len(queued) == total_chunks + 1  # bitmap_req control chunk
+    assert _count_ack_chunks(queued) == 1
     _, received = receiver.receive_message(timeout=2.0)
 
     assert received is not None
@@ -235,10 +249,15 @@ def test_parity_window_strategy_sends_duplicate():
         id="test-parity",
         type="request",
         command="ping",
-        data={"msg": "test" * 20},  # Multi-chunk message
+        data={"blob": bytes(range(256)) * 4},  # Multi-chunk message, low compressibility
     )
 
+    total_chunks = estimate_chunk_count(envelope, sender.segment_size)
+    assert total_chunks > 1
     sender.send_message(envelope, "receiver")
+    queued = list(bus.queues["receiver"])
+    assert len(queued) == total_chunks + 2  # bitmap_req + duplicate last chunk
+    assert _count_ack_chunks(queued) == 1
     _, received = receiver.receive_message(timeout=2.0)
 
     assert received is not None
