@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import threading
 import time
@@ -15,6 +16,64 @@ if TYPE_CHECKING:
 __all__ = ["SerialRadioAdapter", "build_radio"]
 
 LOGGER = logging.getLogger(__name__)
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
+def _connect_serial_interface_with_retries(  # type: ignore[name-defined]
+    serial_interface: Any,
+    port: str | None,
+) -> "serial_interface.SerialInterface":
+    """Best-effort SerialInterface connect with retry.
+
+    Changing LoRa modem preset / power can temporarily reboot radios, which makes the
+    follow-up connect attempt race the device. Retrying here keeps harness tooling
+    from failing on transient reconnect windows.
+    """
+
+    attempts = max(1, _env_int("MESHTASTIC_SERIAL_CONNECT_ATTEMPTS", 3))
+    delay_seconds = max(0.0, _env_float("MESHTASTIC_SERIAL_CONNECT_DELAY_SECONDS", 2.0))
+
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            if port is None:
+                return serial_interface.SerialInterface()
+            return serial_interface.SerialInterface(port)
+        except Exception as exc:  # pragma: no cover - exercised via tests with fakes
+            last_exc = exc
+            if attempt >= attempts:
+                break
+            LOGGER.warning(
+                "[RADIO] Failed to connect to %s (attempt %d/%d): %s. Retrying in %.1fs...",
+                port or "(auto)",
+                attempt,
+                attempts,
+                exc,
+                delay_seconds,
+            )
+            if delay_seconds:
+                time.sleep(delay_seconds)
+
+    assert last_exc is not None
+    raise last_exc
 
 
 class SerialRadioAdapter:
@@ -431,8 +490,5 @@ def build_radio(
         raise RuntimeError(
             "Meshtastic serial interface is not installed; install meshtastic-python"
         ) from exc
-    if port is None:
-        interface = serial_interface.SerialInterface()
-    else:
-        interface = serial_interface.SerialInterface(port)
+    interface = _connect_serial_interface_with_retries(serial_interface, port)
     return SerialRadioAdapter(interface, disable_dedupe=disable_dedupe)

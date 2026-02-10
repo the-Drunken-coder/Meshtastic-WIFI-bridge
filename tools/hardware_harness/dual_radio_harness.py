@@ -113,6 +113,7 @@ def _apply_lora_settings(
             logging.warning("Unknown modem preset %s; skipping preset change", preset_name)
 
     for name, port in (("gateway", gateway_port), ("client", client_port)):
+        iface = None
         try:
             iface = serial_interface.SerialInterface(port)
             cfg = iface.localNode.localConfig
@@ -133,8 +134,6 @@ def _apply_lora_settings(
                 logging.info("Set %s radio (%s) to preset %s", name, port, preset_name)
             elif tx_power is not None:
                 logging.info("Set %s radio (%s) to tx_power %s", name, port, tx_power)
-            iface.close()
-            time.sleep(0.5)
         except Exception as exc:  # pragma: no cover - hardware-only path
             logging.warning(
                 "Failed to set LoRa settings (preset=%s, tx_power=%s) on %s (%s): %s",
@@ -144,6 +143,16 @@ def _apply_lora_settings(
                 port,
                 exc,
             )
+        finally:
+            if iface is not None:
+                try:
+                    iface.close()
+                except Exception:
+                    # Device may have already rebooted/disconnected; ignore cleanup errors.
+                    pass
+            # After config writes, many radios briefly reboot/reset the serial link.
+            # Give Windows time to re-stabilize the COM port before the harness reconnects.
+            time.sleep(2.0)
 
 def prompt_action(
     actions: List[str],
