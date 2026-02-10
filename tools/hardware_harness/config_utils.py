@@ -26,6 +26,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "mode": "general",
     "reliability_method": None,
     "modem_preset": None,
+    "tx_power": None,
     "timeout": None,
     "retries": None,
     "log_level": "INFO",
@@ -110,6 +111,7 @@ def load_config(path: str, mode_override: Optional[str] = None) -> Dict[str, Any
     for key in (
         "reliability_method",
         "modem_preset",
+        "tx_power",
         "timeout",
         "retries",
         "post_response_timeout",

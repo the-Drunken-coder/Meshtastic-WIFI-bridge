@@ -20,6 +20,7 @@ _DEFAULT_BACKOFF_JITTER_FACTOR = 0.2
 _DEFAULT_BACKOFF_MAX_SECONDS = 30.0
 _DEFAULT_TIMEOUT = 30.0
 _DEFAULT_RETRIES = 2
+_DEFAULT_POST_RESPONSE_TIMEOUT = 300.0
 
 
 class MeshtasticClient:
@@ -41,6 +42,11 @@ class MeshtasticClient:
         self._backoff_max = float(client_cfg.get("backoff_max_seconds", _DEFAULT_BACKOFF_MAX_SECONDS))
         self._default_timeout = float(self._mode_config.get("timeout", _DEFAULT_TIMEOUT))
         self._default_retries = int(self._mode_config.get("retries", _DEFAULT_RETRIES))
+        # Upper bound for how long we will keep polling as long as the link is making progress.
+        # This matters when the sender uses large inter-chunk delays for big responses.
+        self._post_response_timeout = float(
+            self._mode_config.get("post_response_timeout", _DEFAULT_POST_RESPONSE_TIMEOUT)
+        )
 
     def echo(
         self,
@@ -230,7 +236,8 @@ class MeshtasticClient:
             observed_chunk_total = 1  # Updated when we see chunk headers/ACKs
             poll_count = 0
             # Use time-since-progress as the primary timeout; cap with a generous overall limit.
-            overall_deadline = attempt_start + (timeout + 60.0)
+            overall_cap = max(timeout + 60.0, self._post_response_timeout)
+            overall_deadline = attempt_start + overall_cap
 
             while True:
                 now = time.time()
@@ -255,9 +262,10 @@ class MeshtasticClient:
                 if now >= overall_deadline:
                     elapsed = time.time() - attempt_start
                     LOGGER.warning(
-                        "[CLIENT] Overall timeout waiting for %s after %.3fs (attempt %d/%d)",
+                        "[CLIENT] Overall timeout waiting for %s after %.3fs (cap %.1fs, attempt %d/%d)",
                         envelope.id[:8],
                         elapsed,
+                        overall_cap,
                         attempt + 1,
                         max_retries + 1,
                     )

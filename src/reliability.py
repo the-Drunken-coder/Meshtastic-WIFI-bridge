@@ -223,8 +223,11 @@ class StageAckNackStrategy:
             return True
         if text.startswith("complete|"):
             # Report missing chunks (including trailing gaps)
-            missing = transport.reassembler.missing_sequences(chunk_id, force=True) or []
-            if missing:
+            missing = transport.reassembler.missing_sequences(chunk_id, force=True)
+            if missing is None:
+                # We haven't seen any chunks yet; do not incorrectly confirm receipt.
+                transport.radio.send(sender, build_nack_chunk(chunk_id, [1]))
+            elif missing:
                 transport.radio.send(sender, build_nack_chunk(chunk_id, missing))
             else:
                 transport.radio.send(sender, build_ack_chunk(f"all_received|{chunk_id}"))
@@ -310,8 +313,12 @@ class WindowedSelectiveStrategy:
 
         text = payload.decode("utf-8", errors="replace")
         if text.startswith("bitmap_req|"):
-            missing = transport.reassembler.missing_sequences(chunk_id, force=True) or []
-            if missing:
+            missing = transport.reassembler.missing_sequences(chunk_id, force=True)
+            if missing is None:
+                # Bitmap request arrived before any chunks for this message.
+                # Ask for chunk 1 so the sender can restart.
+                transport.radio.send(sender, build_nack_chunk(chunk_id, [1]))
+            elif missing:
                 transport.radio.send(sender, build_nack_chunk(chunk_id, missing[: self.max_nack]))
             else:
                 transport.radio.send(sender, build_ack_chunk(f"all_received|{chunk_id}"))

@@ -6,7 +6,7 @@ import threading
 import time
 from typing import TYPE_CHECKING, Any
 
-from message import parse_chunk
+from message import FLAG_ACK, FLAG_NACK, parse_chunk
 from transport import InMemoryRadio, RadioInterface
 
 if TYPE_CHECKING:
@@ -188,11 +188,18 @@ class SerialRadioAdapter:
             if not isinstance(payload_bytes, bytes):
                 payload_bytes = str(payload_bytes).encode("utf-8")
 
-            # Deduplicate messages using chunk header when possible (id + seq + total + flags).
+            # Deduplicate messages using chunk header when possible.
+            #
+            # For data chunks (flags == 0), (short_id, seq, total) is stable and sufficient.
+            # For control chunks (ACK/NACK), seq/total are always (1,1) and payload carries the
+            # meaning, so include a payload hash to avoid dropping distinct control frames.
             # Fall back to payload hash if parsing fails.
             try:
-                flags, short_id, seq, total, _ = parse_chunk(payload_bytes)
-                message_key = (source_str, short_id, seq, total, flags)
+                flags, short_id, seq, total, chunk_payload = parse_chunk(payload_bytes)
+                if flags & (FLAG_ACK | FLAG_NACK):
+                    message_key = (source_str, short_id, seq, total, flags, hash(chunk_payload))
+                else:
+                    message_key = (source_str, short_id, seq, total, flags)
             except Exception:
                 # Using Python's built-in hash for non-cryptographic deduplication
                 payload_hash = hash(payload_bytes)
