@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import base64
@@ -570,6 +571,8 @@ class BackendService:
     def _build_transport(self, radio: object) -> MeshtasticTransport:
         cfg = self._mode_config or {}
         transport_cfg = cfg.get("transport", {})
+        if not isinstance(transport_cfg, dict):
+            transport_cfg = {}
         transport_kwargs = {
             "segment_size": int(transport_cfg.get("segment_size", 202)),
             "chunk_ttl": float(transport_cfg.get("chunk_ttl", 120.0)),
@@ -713,5 +716,17 @@ def _safe_load_mode_config(mode_name: str) -> dict:
     """Load mode config using the centralized load_mode_profile function."""
     try:
         return dict(load_mode_profile(mode_name))
-    except Exception:
+    except (OSError, json.JSONDecodeError, ValueError) as e:
+        logging.warning(
+            "Failed to load mode profile '%s': %s. Falling back to empty config.",
+            mode_name,
+            e
+        )
+        return {}
+    except Exception as e:
+        logging.warning(
+            "Unexpected error loading mode profile '%s': %s. Falling back to empty config.",
+            mode_name,
+            e
+        )
         return {}
