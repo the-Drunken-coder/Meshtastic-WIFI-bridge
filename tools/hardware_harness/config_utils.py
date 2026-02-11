@@ -26,7 +26,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "mode": "general",
     "reliability_method": None,
     "modem_preset": None,
-    "tx_power": None,
+    "tx_power": None,  # 0 = let firmware choose; positive int = explicit dBm
     "timeout": None,
     "retries": None,
     "log_level": "INFO",

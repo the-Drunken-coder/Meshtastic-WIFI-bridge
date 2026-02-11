@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import threading
 import time
@@ -12,9 +13,109 @@ from transport import InMemoryRadio, RadioInterface
 if TYPE_CHECKING:
     from meshtastic import serial_interface
 
-__all__ = ["SerialRadioAdapter", "build_radio"]
+__all__ = ["SerialRadioAdapter", "build_radio", "open_serial_interface"]
 
 LOGGER = logging.getLogger(__name__)
+
+# Module-level lock to ensure thread-safe serial interface initialization
+_SERIAL_INTERFACE_LOCK = threading.Lock()
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
+def _close_orphaned_interface(holder: list) -> None:
+    """Close a partially-initialised SerialInterface that the constructor leaked.
+
+    When ``SerialInterface.__init__`` times out, background threads keep the
+    orphaned object (and its open COM port) alive.  This helper closes it.
+    """
+    for orphan in holder:
+        try:
+            orphan.close()
+        except Exception:
+            LOGGER.debug(
+                "Failed to close orphaned SerialInterface instance", exc_info=True
+            )
+    holder.clear()
+
+
+def open_serial_interface(serial_interface: Any, port: str | None) -> Any:
+    """Create a SerialInterface, ensuring the COM port is freed if __init__ fails.
+    
+    Thread-safe: uses a module-level lock to prevent concurrent monkey-patching.
+    """
+    with _SERIAL_INTERFACE_LOCK:
+        _holder: list = []
+        _orig_init = serial_interface.SerialInterface.__init__
+
+        def _capturing_init(self: Any, *args: Any, **kwargs: Any) -> None:
+            _holder.append(self)
+            _orig_init(self, *args, **kwargs)
+
+        serial_interface.SerialInterface.__init__ = _capturing_init  # type: ignore[assignment]
+        try:
+            if port is None:
+                return serial_interface.SerialInterface()
+            return serial_interface.SerialInterface(port)
+        except Exception:
+            _close_orphaned_interface(_holder)
+            raise
+        finally:
+            serial_interface.SerialInterface.__init__ = _orig_init  # type: ignore[assignment]
+
+
+def _connect_serial_interface_with_retries(  # type: ignore[name-defined]
+    serial_interface: Any,
+    port: str | None,
+) -> "serial_interface.SerialInterface":
+    """Best-effort SerialInterface connect with retry.
+
+    Changing LoRa modem preset / power can temporarily reboot radios, which makes the
+    follow-up connect attempt race the device. Retrying here keeps harness tooling
+    from failing on transient reconnect windows.
+    """
+
+    attempts = max(1, _env_int("MESHTASTIC_SERIAL_CONNECT_ATTEMPTS", 3))
+    delay_seconds = max(0.0, _env_float("MESHTASTIC_SERIAL_CONNECT_DELAY_SECONDS", 2.0))
+
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return open_serial_interface(serial_interface, port)
+        except Exception as exc:
+            last_exc = exc
+            if attempt >= attempts:
+                break
+            LOGGER.warning(
+                "[RADIO] Failed to connect to %s (attempt %d/%d): %s. Retrying in %.1fs...",
+                port or "(auto)",
+                attempt,
+                attempts,
+                exc,
+                delay_seconds,
+            )
+            if delay_seconds:
+                time.sleep(delay_seconds)
+
+    assert last_exc is not None
+    raise last_exc
 
 
 class SerialRadioAdapter:
@@ -431,8 +532,5 @@ def build_radio(
         raise RuntimeError(
             "Meshtastic serial interface is not installed; install meshtastic-python"
         ) from exc
-    if port is None:
-        interface = serial_interface.SerialInterface()
-    else:
-        interface = serial_interface.SerialInterface(port)
+    interface = _connect_serial_interface_with_retries(serial_interface, port)
     return SerialRadioAdapter(interface, disable_dedupe=disable_dedupe)

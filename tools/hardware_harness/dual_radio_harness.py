@@ -28,6 +28,7 @@ _ensure_src_imports()
 
 from client import MeshtasticClient
 from logging_utils import configure_logging
+from radio import open_serial_interface
 
 try:
     from .input_utils import prompt_custom_payload, prompt_for_payload, render_menu
@@ -85,7 +86,11 @@ def _apply_lora_settings(
     client_port: str,
     simulate: bool,
 ) -> None:
-    """Best-effort apply LoRa settings (preset/tx power) to both radios."""
+    """Best-effort apply LoRa settings (preset/tx power) to both radios.
+
+    ``tx_power=0`` means "let the firmware choose" — the radio will use its
+    default power level for the selected modem preset.
+    """
     if simulate:
         logging.info("Simulation enabled; skipping LoRa settings changes")
         return
@@ -112,15 +117,44 @@ def _apply_lora_settings(
         if preset_value is None:
             logging.warning("Unknown modem preset %s; skipping preset change", preset_name)
 
+    _reboot_env = os.getenv("MESHTASTIC_LORA_REBOOT_SLEEP")
+    reboot_sleep = float(_reboot_env) if _reboot_env is not None else 10.0
+
     for name, port in (("gateway", gateway_port), ("client", client_port)):
+        iface = None
+        wrote_config = False
         try:
-            iface = serial_interface.SerialInterface(port)
+            iface = open_serial_interface(serial_interface, port)
             cfg = iface.localNode.localConfig
+
+            # Check if settings already match — skip write to avoid a reboot.
+            # Cast to int for comparison; protobuf enums may not compare equal directly.
+            cur_preset = int(cfg.lora.modem_preset)
+            cur_tx = int(cfg.lora.tx_power)
+            want_preset = int(preset_value) if preset_value is not None else None
+            want_tx = int(tx_power) if tx_power is not None else None
+            logging.debug(
+                "LoRa on %s (%s): current preset=%s tx_power=%s, want preset=%s tx_power=%s",
+                name, port, cur_preset, cur_tx, want_preset, want_tx,
+            )
+            preset_match = want_preset is None or cur_preset == want_preset
+            # tx_power=0 means "let firmware choose" — any reported value is fine.
+            # For explicit values, the radio firmware caps to hardware limits;
+            # if the radio reports a lower value, it is already at its max.
+            tx_match = want_tx is None or want_tx == 0 or cur_tx <= want_tx
+            if preset_match and tx_match:
+                logging.info(
+                    "LoRa settings on %s (%s) already match (preset=%s, tx_power=%s); skipping write",
+                    name, port, preset_name, tx_power,
+                )
+                continue  # finally still runs — closes iface
+
             if preset_value is not None:
                 cfg.lora.modem_preset = preset_value
             if tx_power is not None:
                 cfg.lora.tx_power = int(tx_power)
             iface.localNode.writeConfig("lora")
+            wrote_config = True
             if preset_value is not None and tx_power is not None:
                 logging.info(
                     "Set %s radio (%s) to preset %s and tx_power %s",
@@ -133,8 +167,6 @@ def _apply_lora_settings(
                 logging.info("Set %s radio (%s) to preset %s", name, port, preset_name)
             elif tx_power is not None:
                 logging.info("Set %s radio (%s) to tx_power %s", name, port, tx_power)
-            iface.close()
-            time.sleep(0.5)
         except Exception as exc:  # pragma: no cover - hardware-only path
             logging.warning(
                 "Failed to set LoRa settings (preset=%s, tx_power=%s) on %s (%s): %s",
@@ -144,6 +176,17 @@ def _apply_lora_settings(
                 port,
                 exc,
             )
+        finally:
+            if iface is not None:
+                try:
+                    iface.close()
+                except Exception:
+                    # Device may have already rebooted/disconnected; ignore cleanup errors.
+                    pass
+            if wrote_config:
+                # Radio reboots after a config write; wait for COM port to re-enumerate.
+                logging.info("Waiting %.0fs for %s (%s) to reboot after config write...", reboot_sleep, name, port)
+                time.sleep(reboot_sleep)
 
 def prompt_action(
     actions: List[str],
