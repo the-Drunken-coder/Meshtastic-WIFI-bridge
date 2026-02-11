@@ -13,7 +13,7 @@ from transport import InMemoryRadio, RadioInterface
 if TYPE_CHECKING:
     from meshtastic import serial_interface
 
-__all__ = ["SerialRadioAdapter", "build_radio"]
+__all__ = ["SerialRadioAdapter", "build_radio", "open_serial_interface"]
 
 LOGGER = logging.getLogger(__name__)
 
@@ -56,7 +56,7 @@ def _close_orphaned_interface(holder: list) -> None:
     holder.clear()
 
 
-def _open_serial_interface(serial_interface: Any, port: str | None) -> Any:
+def open_serial_interface(serial_interface: Any, port: str | None) -> Any:
     """Create a SerialInterface, ensuring the COM port is freed if __init__ fails.
     
     Thread-safe: uses a module-level lock to prevent concurrent monkey-patching.
@@ -98,7 +98,7 @@ def _connect_serial_interface_with_retries(  # type: ignore[name-defined]
     last_exc: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
-            return _open_serial_interface(serial_interface, port)
+            return open_serial_interface(serial_interface, port)
         except Exception as exc:
             last_exc = exc
             if attempt >= attempts:

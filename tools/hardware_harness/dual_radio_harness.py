@@ -28,9 +28,7 @@ _ensure_src_imports()
 
 from client import MeshtasticClient
 from logging_utils import configure_logging
-
-# Module-level lock to ensure thread-safe serial interface initialization
-_SERIAL_INTERFACE_LOCK = threading.Lock()
+from radio import open_serial_interface
 
 try:
     from .input_utils import prompt_custom_payload, prompt_for_payload, render_menu
@@ -119,46 +117,14 @@ def _apply_lora_settings(
         if preset_value is None:
             logging.warning("Unknown modem preset %s; skipping preset change", preset_name)
 
-    reboot_sleep = 10.0  # radios reboot after LoRa config writes
-
-    def _open_interface(port: str) -> "serial_interface.SerialInterface":
-        """Open a SerialInterface, ensuring the serial port is released on failure.
-
-        When SerialInterface.__init__ times out waiting for the node, background
-        threads keep the orphaned object (and its open COM port) alive.  We
-        monkey-patch __init__ briefly to capture ``self`` so we can call
-        ``close()`` even when the constructor raises.
-        
-        Thread-safe: uses a module-level lock to prevent concurrent monkey-patching.
-        """
-        with _SERIAL_INTERFACE_LOCK:
-            _holder: list = []
-            _orig_init = serial_interface.SerialInterface.__init__
-
-            def _capturing_init(self: Any, *args: Any, **kwargs: Any) -> None:
-                _holder.append(self)
-                _orig_init(self, *args, **kwargs)
-
-            serial_interface.SerialInterface.__init__ = _capturing_init  # type: ignore[assignment]
-            try:
-                return serial_interface.SerialInterface(port)
-            except Exception:
-                # Close any partially-initialised interface so the COM port is freed.
-                for orphan in _holder:
-                    try:
-                        orphan.close()
-                    except Exception:
-                        # Ignore cleanup errors: the original initialisation failure is re-raised below.
-                        pass
-                raise
-            finally:
-                serial_interface.SerialInterface.__init__ = _orig_init  # type: ignore[assignment]
+    _reboot_env = os.getenv("MESHTASTIC_LORA_REBOOT_SLEEP")
+    reboot_sleep = float(_reboot_env) if _reboot_env is not None else 10.0
 
     for name, port in (("gateway", gateway_port), ("client", client_port)):
         iface = None
         wrote_config = False
         try:
-            iface = _open_interface(port)
+            iface = open_serial_interface(serial_interface, port)
             cfg = iface.localNode.localConfig
 
             # Check if settings already match — skip write to avoid a reboot.
@@ -181,7 +147,7 @@ def _apply_lora_settings(
                     "LoRa settings on %s (%s) already match (preset=%s, tx_power=%s); skipping write",
                     name, port, preset_name, tx_power,
                 )
-                continue
+                continue  # finally still runs — closes iface
 
             if preset_value is not None:
                 cfg.lora.modem_preset = preset_value

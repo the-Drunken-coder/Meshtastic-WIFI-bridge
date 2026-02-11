@@ -5,8 +5,11 @@ from __future__ import annotations
 import sys
 import types
 
+import pytest
+
 from radio import SerialRadioAdapter
 from radio import build_radio
+from radio import open_serial_interface
 
 
 class _FakeSerialInterface:
@@ -104,3 +107,50 @@ def test_build_radio_retries_serial_connect(monkeypatch) -> None:
     finally:
         if adapter is not None:
             adapter.close()
+
+
+def test_build_radio_raises_after_all_retries_exhausted(monkeypatch) -> None:
+    """When every attempt fails, the last exception must propagate."""
+
+    class _AlwaysFailInterface:
+        def __init__(self, _dev_path: str | None = None, *args, **kwargs) -> None:
+            raise RuntimeError("permanent failure")
+
+        def close(self) -> None:
+            return
+
+    fake_serial_interface_mod = types.ModuleType("meshtastic.serial_interface")
+    fake_serial_interface_mod.SerialInterface = _AlwaysFailInterface  # type: ignore[attr-defined]
+    fake_meshtastic_mod = types.ModuleType("meshtastic")
+    fake_meshtastic_mod.serial_interface = fake_serial_interface_mod  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "meshtastic", fake_meshtastic_mod)
+
+    monkeypatch.setenv("MESHTASTIC_SERIAL_CONNECT_ATTEMPTS", "2")
+    monkeypatch.setenv("MESHTASTIC_SERIAL_CONNECT_DELAY_SECONDS", "0")
+    import radio as radio_module
+
+    monkeypatch.setattr(radio_module.time, "sleep", lambda _s: None)
+
+    with pytest.raises(RuntimeError, match="permanent failure"):
+        build_radio(simulate=False, port="COM17", node_id="node-1")
+
+
+def test_open_serial_interface_closes_orphan_on_init_failure(monkeypatch) -> None:
+    """If SerialInterface.__init__ raises after self is created, .close() must be called."""
+    closed: list[bool] = []
+
+    class _OrphanInterface:
+        def __init__(self, _dev_path: str | None = None, *args, **kwargs) -> None:
+            # __init__ body runs (self exists) then fails
+            raise RuntimeError("init explosion")
+
+        def close(self) -> None:
+            closed.append(True)
+
+    fake_mod = types.ModuleType("fake_serial_interface")
+    fake_mod.SerialInterface = _OrphanInterface  # type: ignore[attr-defined]
+
+    with pytest.raises(RuntimeError, match="init explosion"):
+        open_serial_interface(fake_mod, "COM99")
+
+    assert closed, "orphaned interface was not closed"
