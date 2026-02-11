@@ -96,9 +96,11 @@ def test_build_radio_retries_serial_connect(monkeypatch) -> None:
 
     monkeypatch.setattr(radio_module.time, "sleep", lambda _s: None)
 
-    adapter = build_radio(simulate=False, port="COM17", node_id="node-1")
+    adapter = None
     try:
+        adapter = build_radio(simulate=False, port="COM17", node_id="node-1")
         assert calls["count"] == 3
         assert isinstance(adapter, SerialRadioAdapter)
     finally:
-        adapter.close()
+        if adapter is not None:
+            adapter.close()

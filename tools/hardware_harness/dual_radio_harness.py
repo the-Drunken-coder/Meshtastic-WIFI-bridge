@@ -29,6 +29,9 @@ _ensure_src_imports()
 from client import MeshtasticClient
 from logging_utils import configure_logging
 
+# Module-level lock to ensure thread-safe serial interface initialization
+_SERIAL_INTERFACE_LOCK = threading.Lock()
+
 try:
     from .input_utils import prompt_custom_payload, prompt_for_payload, render_menu
     from .setup_utils import build_transport, close_transport, start_gateway
@@ -125,27 +128,31 @@ def _apply_lora_settings(
         threads keep the orphaned object (and its open COM port) alive.  We
         monkey-patch __init__ briefly to capture ``self`` so we can call
         ``close()`` even when the constructor raises.
+        
+        Thread-safe: uses a module-level lock to prevent concurrent monkey-patching.
         """
-        _holder: list = []
-        _orig_init = serial_interface.SerialInterface.__init__
+        with _SERIAL_INTERFACE_LOCK:
+            _holder: list = []
+            _orig_init = serial_interface.SerialInterface.__init__
 
-        def _capturing_init(self: Any, *args: Any, **kwargs: Any) -> None:
-            _holder.append(self)
-            _orig_init(self, *args, **kwargs)
+            def _capturing_init(self: Any, *args: Any, **kwargs: Any) -> None:
+                _holder.append(self)
+                _orig_init(self, *args, **kwargs)
 
-        serial_interface.SerialInterface.__init__ = _capturing_init  # type: ignore[assignment]
-        try:
-            return serial_interface.SerialInterface(port)
-        except Exception:
-            # Close any partially-initialised interface so the COM port is freed.
-            for orphan in _holder:
-                try:
-                    orphan.close()
-                except Exception:
-                    pass
-            raise
-        finally:
-            serial_interface.SerialInterface.__init__ = _orig_init  # type: ignore[assignment]
+            serial_interface.SerialInterface.__init__ = _capturing_init  # type: ignore[assignment]
+            try:
+                return serial_interface.SerialInterface(port)
+            except Exception:
+                # Close any partially-initialised interface so the COM port is freed.
+                for orphan in _holder:
+                    try:
+                        orphan.close()
+                    except Exception:
+                        # Ignore cleanup errors: the original initialisation failure is re-raised below.
+                        pass
+                raise
+            finally:
+                serial_interface.SerialInterface.__init__ = _orig_init  # type: ignore[assignment]
 
     for name, port in (("gateway", gateway_port), ("client", client_port)):
         iface = None
