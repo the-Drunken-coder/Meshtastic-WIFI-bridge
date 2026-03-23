@@ -62,10 +62,6 @@ _DECOMPRESSOR = zstd.ZstdDecompressor()
 # Thresholds for adaptive compression
 _COMPRESSION_THRESHOLD_FAST = 200  # bytes
 _COMPRESSION_THRESHOLD_THOROUGH = 1000  # bytes
-ALIAS_MAP: Dict[str, str] = {}
-REVERSE_ALIAS_MAP: Dict[str, str] = {v: k for k, v in ALIAS_MAP.items()}
-
-# Envelope-specific aliases (applied non-recursively to the top-level container)
 ENVELOPE_ALIAS_MAP: Dict[str, str] = {
     "command": "cmd",
     "data": "d",
@@ -132,27 +128,32 @@ def _normalize_value(key: str, value: Any) -> Any:
     return value
 
 
-def _alias_payload(value: Any, encode: bool = True) -> Any:
+def _normalize_payload(value: Any) -> Any:
+    """Recursively normalize timestamp values in a payload to reduce wire size.
+
+    Timestamps in ``created_at`` / ``updated_at`` / ``ca`` / ``ua`` fields are
+    truncated to second precision (sub-second component stripped).  Key names
+    are not renamed; use :func:`shorten_payload` for an identity transform that
+    still applies this normalization.
+    """
     if isinstance(value, dict):
-        mapped: Dict[str, Any] = {}
-        for key, val in value.items():
-            new_key = ALIAS_MAP.get(key, key) if encode else REVERSE_ALIAS_MAP.get(key, key)
-            normalized_val = _normalize_value(key, val) if encode else val
-            mapped[new_key] = _alias_payload(normalized_val, encode=encode)
-        return mapped
+        return {key: _normalize_payload(_normalize_value(key, val)) for key, val in value.items()}
     if isinstance(value, list):
-        return [_alias_payload(item, encode=encode) for item in value]
+        return [_normalize_payload(item) for item in value]
     return value
 
 
+# Keep these public helpers for callers that import them by name.
+# With the inner-data key-aliasing map removed (it was always empty), these
+# now only apply timestamp normalization.
 def shorten_payload(payload: Any) -> Any:
-    """Public helper to apply aliasing/normalization to an arbitrary payload."""
-    return _alias_payload(payload, encode=True)
+    """Apply timestamp normalization to an arbitrary payload (no key aliasing)."""
+    return _normalize_payload(payload)
 
 
 def expand_payload(payload: Any) -> Any:
-    """Reverse aliasing/normalization on a payload."""
-    return _alias_payload(payload, encode=False)
+    """Reverse of :func:`shorten_payload` (no-op: normalization is one-way)."""
+    return payload
 
 
 def _select_compressor(payload_size: int) -> zstd.ZstdCompressor:
@@ -168,16 +169,10 @@ def _encode_payload(envelope: MessageEnvelope) -> bytes:
     """Encode envelope as compressed binary payload with scoped aliasing."""
     # 1. Start with raw dict
     raw = envelope.to_dict()
-    
-    # 2. Recursively alias the inner 'data' payload
-    if "data" in raw:
-        raw["data"] = _alias_payload(raw["data"], encode=True)
-        
-    # 3. Alias the top-level envelope keys
-    aliased = {}
-    for k, v in raw.items():
-        aliased[ENVELOPE_ALIAS_MAP.get(k, k)] = v
-        
+
+    # 2. Alias the top-level envelope keys
+    aliased = {ENVELOPE_ALIAS_MAP.get(k, k): v for k, v in raw.items()}
+
     payload = msgpack.packb(aliased, use_bin_type=True)
     # Use adaptive compression based on payload size
     compressor = _select_compressor(len(payload))
@@ -188,17 +183,9 @@ def _decode_payload(encoded: bytes) -> Dict[str, Any]:
     """Decode compressed binary payload back to dict with scoped aliasing."""
     decompressed = _DECOMPRESSOR.decompress(encoded)
     unpacked = msgpack.unpackb(decompressed, raw=False)
-    
-    # 1. Un-alias top-level envelope keys
-    envelope_dict = {}
-    for k, v in unpacked.items():
-        envelope_dict[REVERSE_ENVELOPE_MAP.get(k, k)] = v
-        
-    # 2. Recursively un-alias inner 'data' payload
-    if "data" in envelope_dict:
-        envelope_dict["data"] = _alias_payload(envelope_dict["data"], encode=False)
-        
-    return envelope_dict
+
+    # Un-alias top-level envelope keys
+    return {REVERSE_ENVELOPE_MAP.get(k, k): v for k, v in unpacked.items()}
 
 
 def estimate_chunk_count(envelope: MessageEnvelope, segment_size: int = SEGMENT_SIZE) -> int:

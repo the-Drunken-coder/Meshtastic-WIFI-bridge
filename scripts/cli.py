@@ -98,14 +98,14 @@ def parse_args() -> BridgeConfig:
         metrics_host=args.metrics_host,
         metrics_port=args.metrics_port,
         metrics_enabled=metrics_enabled,
+        command=args.command,
+        data=args.data,
+        radio_port=args.radio_port,
+        node_id=args.node_id or ("gateway" if args.mode == "gateway" else "client"),
+        web_browser=args.web_browser,
+        web_host=args.web_host,
+        web_port=args.web_port,
     )
-    config._command = args.command  # type: ignore[attr-defined]
-    config._data = args.data
-    config._radio_port = args.radio_port
-    config._node_id = args.node_id or ("gateway" if args.mode == "gateway" else "client")
-    config._web_browser = args.web_browser  # type: ignore[attr-defined]
-    config._web_host = args.web_host  # type: ignore[attr-defined]
-    config._web_port = args.web_port  # type: ignore[attr-defined]
     return config
 
 
@@ -121,37 +121,31 @@ def run_gateway(config: BridgeConfig, transport: MeshtasticTransport) -> None:
 
 def run_client(config: BridgeConfig, transport: MeshtasticTransport) -> None:
     # Check if web browser mode is requested
-    web_browser = getattr(config, "_web_browser", False)
-    if web_browser:
+    if config.web_browser:
         run_web_browser(config, transport)
         return
-    
-    command = getattr(config, "_command", None)
-    if not command:
+
+    if not config.command:
         raise RuntimeError("Client mode requires --command or --web-browser")
-    data_str = getattr(config, "_data", "{}")
-    payload: dict[str, Any] = json.loads(data_str)
+    payload: dict[str, Any] = json.loads(config.data)
     client = MeshtasticClient(transport, config.gateway_node_id)
-    response = client.send_request(command, payload, timeout=config.timeout)
+    response = client.send_request(config.command, payload, timeout=config.timeout)
     print(json.dumps(response.to_dict(), indent=2))
 
 
 def run_web_browser(config: BridgeConfig, transport: MeshtasticTransport) -> None:
     """Start the web browser UI for browsing over the mesh."""
     from web_ui import MeshWebBrowser
-    
-    web_host = getattr(config, "_web_host", "127.0.0.1")
-    web_port = getattr(config, "_web_port", 8080)
-    
+
     browser = MeshWebBrowser(
         gateway_node_id=config.gateway_node_id,
         transport=transport,
-        host=web_host,
-        port=web_port,
+        host=config.web_host,
+        port=config.web_port,
     )
-    
+
     LOGGER.info("Starting Meshtastic Web Browser")
-    LOGGER.info(f"Open http://{web_host}:{web_port} in your browser")
+    LOGGER.info(f"Open http://{config.web_host}:{config.web_port} in your browser")
     LOGGER.info(f"Gateway Node ID: {config.gateway_node_id}")
     
     try:
@@ -214,8 +208,8 @@ def main() -> None:
     config = parse_args()
     radio = build_radio(
         config.simulate_radio,
-        getattr(config, "_radio_port", None),
-        getattr(config, "_node_id", None),
+        config.radio_port,
+        config.node_id,
     )
     transport = MeshtasticTransport(radio, spool_path=config.spool_path)
     metrics_server = start_observability_server(config, transport)

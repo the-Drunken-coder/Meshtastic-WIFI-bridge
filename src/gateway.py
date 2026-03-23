@@ -4,10 +4,11 @@ import asyncio
 import base64
 import json
 import logging
+import threading
 import time
 import urllib.error
 import urllib.request
-from typing import Any, Callable, Dict, Set
+from typing import Any, Callable, Dict, Optional
 
 from message import MessageEnvelope
 from metrics import DEFAULT_LATENCY_BUCKETS, get_metrics_registry
@@ -140,7 +141,9 @@ class MeshtasticGateway:
         self.handlers = handlers or DEFAULT_HANDLERS
         self._running = False
         self._metrics = get_metrics_registry()
-        self._numeric_senders_seen: Set[str] = set()
+        # Maps numeric sender ID -> timestamp of first contact, used to implement
+        # a non-blocking discovery delay without sleeping the main receive loop.
+        self._numeric_senders_first_seen: Dict[str, float] = {}
 
         # Load gateway config from mode profile
         self._mode_config = mode_config or {}
@@ -156,6 +159,19 @@ class MeshtasticGateway:
             self._numeric_sender_delay = float(
                 gateway_cfg.get("numeric_sender_delay", self._DEFAULT_NUMERIC_SENDER_DELAY)
             )
+
+        # Persistent event loop for coroutine-based handlers.
+        # Using a single background loop avoids the overhead of asyncio.run()
+        # creating and tearing down a new loop for every handler invocation, and
+        # also prevents RuntimeError when the gateway is eventually embedded in an
+        # async host (e.g. if the caller already has a running event loop).
+        self._async_loop = asyncio.new_event_loop()
+        self._async_thread = threading.Thread(
+            target=self._async_loop.run_forever,
+            daemon=True,
+            name="gateway-async-loop",
+        )
+        self._async_thread.start()
 
     def run_once(self, timeout: float = 1.0) -> None:
         outbox_handler = getattr(self.transport, "process_outbox", None)
@@ -220,22 +236,30 @@ class MeshtasticGateway:
             receive_time,
         )
 
-        # Allow time for node discovery to complete if this is first contact
-        # Delay is configurable (default 0.5s, set to 0 to disable)
+        # Allow time for node discovery to complete if this is first contact.
+        # Rather than blocking the receive loop with time.sleep(), we track when
+        # we first saw this numeric sender and only sleep the *remaining* wait
+        # time.  On subsequent calls from the same sender the window will have
+        # already elapsed and no sleep is needed, so the loop stays responsive.
         if (
             self._numeric_sender_delay > 0
-            and sender 
-            and sender.isdigit() 
-            and not sender.startswith("!") 
-            and sender not in self._numeric_senders_seen
+            and sender
+            and sender.isdigit()
+            and not sender.startswith("!")
         ):
-            LOGGER.info(
-                "[GATEWAY] Sender %s is numeric ID - waiting %.1fs for node discovery", 
-                sender, 
-                self._numeric_sender_delay,
-            )
-            time.sleep(self._numeric_sender_delay)
-            self._numeric_senders_seen.add(sender)
+            now = time.time()
+            first_seen = self._numeric_senders_first_seen.get(sender)
+            if first_seen is None:
+                self._numeric_senders_first_seen[sender] = now
+                first_seen = now
+            remaining = self._numeric_sender_delay - (now - first_seen)
+            if remaining > 0:
+                LOGGER.info(
+                    "[GATEWAY] Sender %s is numeric ID - waiting %.2fs for node discovery",
+                    sender,
+                    remaining,
+                )
+                time.sleep(remaining)
 
         try:
             handle_start = time.time()
@@ -319,6 +343,8 @@ class MeshtasticGateway:
 
     def stop(self) -> None:
         self._running = False
+        # Shut down the persistent async event loop cleanly.
+        self._async_loop.call_soon_threadsafe(self._async_loop.stop)
 
     def _handle_request(self, envelope: MessageEnvelope) -> MessageEnvelope:
         try:
@@ -327,7 +353,12 @@ class MeshtasticGateway:
                 raise ValueError(f"Unknown command: {envelope.command}")
             result = handler(envelope, envelope.data or {})
             if asyncio.iscoroutine(result):
-                result = asyncio.run(result)
+                # Run the coroutine on the persistent event loop rather than
+                # creating a throw-away loop via asyncio.run() each time.
+                # asyncio.run_coroutine_threadsafe is thread-safe and the
+                # .result() call blocks until the coroutine completes.
+                future = asyncio.run_coroutine_threadsafe(result, self._async_loop)
+                result = future.result()
             compacted = self._compact_payload({"result": result})
             return MessageEnvelope(
                 id=envelope.id,
@@ -347,19 +378,22 @@ class MeshtasticGateway:
             )
 
     def _compact_payload(self, payload: Any) -> Any:
+        """Recursively remove None and empty containers from a payload dict.
+
+        Only ``None``, empty dicts ``{}``, and empty lists ``[]`` are dropped.
+        Scalar falsy values such as ``False``, ``0``, and ``""`` are kept
+        because they carry meaningful information and silently discarding them
+        would corrupt handler responses (e.g. ``{"success": False}``).
+        """
         if isinstance(payload, dict):
             compacted: Dict[str, Any] = {}
             for key, value in payload.items():
                 compact_value = self._compact_payload(value)
                 if compact_value is None:
                     continue
-                if compact_value is False:
+                if isinstance(compact_value, dict) and not compact_value:
                     continue
-                if compact_value == "":
-                    continue
-                if compact_value == {}:
-                    continue
-                if compact_value == []:
+                if isinstance(compact_value, list) and not compact_value:
                     continue
                 compacted[key] = compact_value
             return compacted

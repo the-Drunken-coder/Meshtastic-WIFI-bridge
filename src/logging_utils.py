@@ -11,10 +11,11 @@ def configure_logging(level: str, log_file: str | None = None) -> None:
 
     Args:
         level: Logging level name (e.g., 'DEBUG', 'INFO', 'WARNING').
-        log_file: Optional path to log file. Only used when level is DEBUG.
+        log_file: Optional path to log file. When provided, output is written to
+            this file at the requested level regardless of the level chosen.
     """
     level_name = level.upper()
-    filename = os.path.expanduser(log_file) if log_file and level_name == "DEBUG" else None
+    filename = os.path.expanduser(log_file) if log_file else None
     logging.basicConfig(
         level=getattr(logging, level_name, logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
