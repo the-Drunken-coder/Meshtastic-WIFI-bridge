@@ -160,6 +160,7 @@ python tools/hardware_harness/dual_radio_harness.py
 ## Notes
 
 - The binary protocol is described in `docs/SYSTEMS_DESIGN.md`.
+- A maintainer-facing architecture review is available in `docs/ARCHITECTURE_REVIEW.md`.
 - The gateway exposes default handlers for `echo`, `payload_digest`, and `health`.
 - For large payload testing, prefer the harness `payload_digest` flow so the
   response stays small.
